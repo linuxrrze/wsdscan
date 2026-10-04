@@ -45,11 +45,15 @@ MAX_THUMBNAIL_SOURCE_PIXELS = 100_000_000  # 600 dpi A3 is ~70 megapixels
 
 
 def in_main_thread(func, *args):
-    """Run func(*args) in the GTK main loop (from a worker thread)."""
+    """Run func(*args) in the GTK main loop (from a worker thread).
+
+    At default priority, not idle: idle callbacks can starve while GTK keeps
+    redrawing animations (e.g. a spinner), delaying results and progress.
+    """
     def call():
         func(*args)
         return GLib.SOURCE_REMOVE
-    GLib.idle_add(call)
+    GLib.idle_add(call, priority=GLib.PRIORITY_DEFAULT)
 
 
 def run_in_thread(work, on_done, on_error):
@@ -849,6 +853,9 @@ class ScannerPage(Adw.NavigationPage):
         super().__init__(title=name or _("New Scanner"))
         self.prefs = prefs
         self.old_name = name
+        # Not shown in the app (an address or host name identifies a scanner
+        # better); a model filter from the config file is kept for the CLI.
+        self.kept_model = values["model"]
         self.removed = False
         self.name_auto = not name  # propose the device name until the user types one
         self._setting_name = False
@@ -860,13 +867,7 @@ class ScannerPage(Adw.NavigationPage):
         self.name_row.connect("changed", self._name_changed)
         self.host_row = Adw.EntryRow(use_markup=False, title=_("IP address or host name"),
                                      text=values["host"])
-        # The model filter only matters for automatic discovery (no address).
-        self.model_row = Adw.EntryRow(use_markup=False,
-                                      title=_("Without address: only scanners whose name contains"),
-                                      text=values["model"] if not values["host"] else "")
-        for entry in (self.host_row, self.model_row):
-            entry.connect("changed", lambda *_a: self._schedule_lookup())
-        self.host_row.connect("changed", lambda *_a: self._sync_model_row())
+        self.host_row.connect("changed", lambda *_a: self._schedule_lookup())
         self.device_row = Adw.ActionRow(use_markup=False, title=_("Device"), css_classes=["property"])
         is_default = name == prefs.default_name or not prefs.profiles
         self.default_row = Adw.SwitchRow(use_markup=False, title=_("Use by default"), active=is_default)
@@ -875,10 +876,8 @@ class ScannerPage(Adw.NavigationPage):
             self.default_row.set_sensitive(False)
             self.default_row.set_subtitle(_("To change, make another scanner the default"))
         # Address first: the name is proposed from the scanner found there.
-        for widget in (self.host_row, self.model_row, self.name_row, self.device_row,
-                       self.default_row):
+        for widget in (self.host_row, self.name_row, self.device_row, self.default_row):
             ident.add(widget)
-        self._sync_model_row()
 
         connected = name is not None and name == app.config["scanner"] and window.device
         self.settings = ScanSettings(values, window.choices if connected else
@@ -946,34 +945,25 @@ class ScannerPage(Adw.NavigationPage):
         self.name_row.set_text(text)
         self._setting_name = False
 
-    def _sync_model_row(self):
-        self.model_row.set_visible(not self.host_row.get_text().strip())
-
-    def _model_filter(self):
-        """The model filter, if it applies (only without an address)."""
-        if self.host_row.get_text().strip():
-            return ""
-        return self.model_row.get_text().strip()
-
     def _schedule_lookup(self):
         if self._lookup_source:
             GLib.source_remove(self._lookup_source)
             self._lookup_source = 0
-        host, model = self.host_row.get_text().strip(), self._model_filter()
-        if not host and not model:
+        host = self.host_row.get_text().strip()
+        if not host:
             self.device_row.set_subtitle(_("No address: found automatically on the network "
                                            "when scanning"))
             return
         self.device_row.set_subtitle(_("Searching…"))
-        self._lookup_source = GLib.timeout_add(self.LOOKUP_DELAY_MS, self._lookup, host, model)
+        self._lookup_source = GLib.timeout_add(self.LOOKUP_DELAY_MS, self._lookup, host)
 
-    def _lookup(self, host, model):
+    def _lookup(self, host):
         self._lookup_source = 0
         self._lookup_token += 1
         token = self._lookup_token
 
         def work():
-            device = wsdscan.find_scanner(host or None, model or None)
+            device = wsdscan.find_scanner(host)
             try:
                 return device, wsdscan.get_capabilities(device["service"])
             except wsdscan.SoapFault as e:
@@ -1001,8 +991,7 @@ class ScannerPage(Adw.NavigationPage):
 
     def values(self):
         values = dict(self.settings.values(), **self.ocr_rows.values(),
-                      host=self.host_row.get_text().strip(),
-                      model=self._model_filter(),
+                      host=self.host_row.get_text().strip(), model=self.kept_model,
                       outdir=self.folder.folder, filename=self.filename.get_text().strip()
                       or wsdscan.CONFIG_DEFAULTS["filename"])
         if self.follow_documents and values["outdir"] == scanform.documents_dir():

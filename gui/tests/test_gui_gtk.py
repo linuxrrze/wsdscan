@@ -197,9 +197,9 @@ class GtkTest(unittest.TestCase):
             self.assertEqual(app.scanners["EPSON ES-580W"]["host"], fake.host)
             window.close()
 
-    def test_scanner_page_address_first_and_model_filter(self):
+    def test_scanner_page_address_first_no_model_filter(self):
         wsdscan.save_config({"scanner": "A"}, scanners={
-            "A": {"host": "192.0.2.1", "model": "ES-580W"}, "B": {"model": "ADS"}})
+            "A": {"host": "192.0.2.1"}, "B": {"model": "ADS"}})
         app = wsdscan_gui.ScanApp()
         app.register(None)
         app.activate()
@@ -210,17 +210,15 @@ class GtkTest(unittest.TestCase):
         group = page.host_row.get_parent()
         assert group is not None
         self.assertIs(group.get_first_child(), page.host_row, "address is the first row")
-        # With an address the name filter is pointless: hidden and not saved.
-        self.assertFalse(page.model_row.get_visible())
+        self.assertIs(page.host_row.get_next_sibling(), page.name_row, "then the name")
+        self.assertFalse(hasattr(page, "model_row"), "no model filter in the app")
         self.assertEqual(page.values()["model"], "")
-        page.host_row.set_text("")
-        self.assertTrue(page.model_row.get_visible())
-        page.model_row.set_text("ES-580W")
-        self.assertEqual(page.values()["model"], "ES-580W")
-        # Without address (found automatically) the filter is shown.
+        # A model filter set in the config file (for the CLI) is kept unchanged.
         page_b = wsdscan_gui.ScannerPage(prefs, "B")
-        self.assertTrue(page_b.model_row.get_visible())
-        self.assertEqual(page_b.model_row.get_text(), "ADS")
+        self.assertEqual(page_b.values()["model"], "ADS")
+        page_b.apply()
+        prefs.close()
+        wait_for(lambda: app.scanners.get("B", {}).get("model") == "ADS")
         window.close()
 
     def test_typed_name_is_kept(self):

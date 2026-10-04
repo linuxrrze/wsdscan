@@ -121,8 +121,7 @@ Every scanner has **its own settings**. Different scanners can be set up differe
 
 **A scanner's page** has:
 - **Scanner:**
-  - **IP address or host name** (first): empty = find it automatically on the network.
-  - **Model filter**, only without an address: for automatic discovery, use only scanners whose name contains this text. With an address it isn't shown and isn't saved.
+  - **IP address or host name** (first): empty = find it automatically on the network. If the scanner's IP address changes (assigned automatically by the router), use its network name instead, e.g. `EPSON1234AB.local`.
   - **Name:** editable. While you haven't typed one, the name of the scanner found at the address ("EPSON ES-580W") is proposed.
   - **Device:** what was found at that address.
   - **Use by default.**
@@ -168,7 +167,7 @@ last_scanner = Office color
 |---|---|---|
 | `scanner` | name of a `[scanner NAME]` section | the default scanner; see below |
 | `host` | IP address or hostname, or empty | empty = find the scanner automatically |
-| `model` | text, or empty | only use scanners whose name contains it |
+| `model` | text, or empty | only use scanners whose name contains it; for the `wsdscan` command (`--model`), not shown in the app (an address or host name identifies a scanner better) |
 | `source` | `duplex`, `adf` | `adf` = one side |
 | `mode` | `color`, `gray`, `bw` | black & white is always lossless |
 | `resolution` | dpi, e.g. `300` | the scanner decides which values are allowed |
