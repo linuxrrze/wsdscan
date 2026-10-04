@@ -87,7 +87,7 @@ class ChoiceRow(Adw.ComboRow):
 class ScanSettings:
     """The scan option rows; used by the main window and the preferences."""
 
-    def __init__(self, values, choices, ocr, review=False):
+    def __init__(self, values, choices, ocr):
         self.choices = choices
         self.ocr_status = ocr
         self.lossless_wanted = bool(values["lossless"])
@@ -115,7 +115,7 @@ class ScanSettings:
         self.review = Adw.SwitchRow(
             title=_("Review pages before saving"),
             subtitle=_("Remove single pages before saving and text recognition"),
-            active=review)
+            active=bool(values["review_pages"]))
 
         self.mode.connect("notify::selected", lambda *_a: self.sync_lossless())
         self.lossless.connect("notify::active", self._on_lossless_toggled)
@@ -166,9 +166,8 @@ class ScanSettings:
         self.exposure.set_visible(choices.exposure)
         self.sync_lossless()
 
-    def set_values(self, values, review=None):
-        if review is not None:
-            self.review.set_active(review)
+    def set_values(self, values):
+        self.review.set_active(bool(values["review_pages"]))
         self.source.set_value(values["source"])
         self.mode.set_value(values["mode"])
         self.resolution.set_value(self.choices.pick_resolution(values["resolution"]))
@@ -190,6 +189,7 @@ class ScanSettings:
             "brightness": int(self.brightness.get_value()) if exposure else None,
             "contrast": int(self.contrast.get_value()) if exposure else None,
             "ocr": self.ocr.get_active(),
+            "review_pages": self.review.get_active(),
         }
 
     def scan_values(self):
@@ -351,7 +351,7 @@ class MainWindow(Adw.ApplicationWindow):
                               lambda *_a: self.activate_action("win.scan", None))
         self.folder_row = FolderRow(_("Folder"), cfg["outdir"] or scanform.documents_dir())
         # Scan settings: summary here, the rows live in ScanSettingsDialog.
-        self.settings = ScanSettings(cfg, self.choices, app.ocr, gui["review_pages"])
+        self.settings = ScanSettings(cfg, self.choices, app.ocr)
         self.settings_row = Adw.ActionRow(title=_("Scan settings"), activatable=True,
                                           action_name="win.scan-settings")
         self.settings_row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
@@ -480,7 +480,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.choices = scanform.Choices.from_capabilities(caps)
         self.settings.apply_choices(self.choices)
         self.update_summary()
-        title, subtitle = scanform.describe_scanner(device, caps)
+        title, subtitle = scanform.describe_scanner(device, caps, self.app.config["scanner"])
         self.scanner_row.set_title(title)
         self.scanner_row.set_subtitle(subtitle)
         self.title.set_subtitle(title)
@@ -699,7 +699,7 @@ class MainWindow(Adw.ApplicationWindow):
     def apply_preferences(self, reconnect):
         cfg = self.app.config
         self.refresh_scanner_choice()
-        self.settings.set_values(cfg, review=self.app.gui_config["review_pages"])
+        self.settings.set_values(cfg)
         self.update_summary()
         self.folder_row.set_folder(cfg["outdir"] or scanform.documents_dir())
         self.new_file_name()
@@ -724,7 +724,8 @@ class ScanSettingsDialog(Adw.Dialog):
 
         reset = Gtk.Button(label=_("Reset to Defaults"))
         reset.connect("clicked", self._reset)
-        save = Gtk.Button(label=_("Save as Defaults"))
+        save = Gtk.Button(label=_("Save for This Scanner") if window.app.config["scanner"]
+                          else _("Save as Defaults"))
         save.connect("clicked", self._save_defaults)
         buttons = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER, margin_top=12,
                           margin_bottom=12, margin_start=12, margin_end=12)
@@ -744,12 +745,13 @@ class ScanSettingsDialog(Adw.Dialog):
 
     def _save_defaults(self, *_args):
         try:
-            self.window.app.save_config(self.window.settings.values(),
-                                        {"review_pages": self.window.settings.review.get_active()})
+            self.window.app.save_scanner_settings(self.window.settings.values())
         except (ValueError, OSError) as e:
             self.window.show_error(_("Could not save the defaults: {error}").format(error=e))
             return
-        self.toasts.add_toast(Adw.Toast(title=_("Saved as defaults for new scans")))
+        self.toasts.add_toast(Adw.Toast(title=_("Saved as defaults of “{name}”").format(
+            name=self.window.app.config["scanner"]) if self.window.app.config["scanner"]
+            else _("Saved as defaults")))
 
     def _closed(self, *_args):
         # Hand the rows back so the next dialog can show them again.
@@ -758,77 +760,283 @@ class ScanSettingsDialog(Adw.Dialog):
         self.window.update_summary()
 
 
+class OcrRows:
+    """Engine and languages of one scanner's text recognition."""
+
+    def __init__(self, values, ocr):
+        self.ocr = ocr
+        self.engine = ChoiceRow(_("Engine"), ocr.engine_options(), values["ocr_engine"])
+        self.auto = Adw.SwitchRow(
+            title=_("Choose languages automatically"),
+            subtitle=_("Currently: {langs}").format(langs=ocr.default_lang),
+            active=not values["ocr_lang"])
+        self.lang_choices = ocr.language_choices(values["ocr_lang"] or ocr.default_lang)
+        self.lang_rows = {}
+        for code, label, selected, installed in self.lang_choices:
+            self.lang_rows[code] = Adw.SwitchRow(
+                title=label, active=selected, subtitle="" if installed else _("Not installed"))
+        self.hint = Adw.ActionRow(
+            subtitle=_("More languages come as packages, e.g. “tesseract-ocr-fra” for French."),
+            css_classes=["property"])
+        self.auto.connect("notify::active", lambda *_a: self._sync())
+        for row in self.rows():
+            row.set_sensitive(ocr.available)
+        self._sync()
+
+    def rows(self):
+        return [self.engine, self.auto, *self.lang_rows.values(), self.hint]
+
+    def _sync(self):
+        manual = self.ocr.available and not self.auto.get_active()
+        for row in self.lang_rows.values():
+            row.set_sensitive(manual)
+
+    def values(self):
+        if self.auto.get_active():
+            lang = ""
+        else:
+            selected = {code for code, row in self.lang_rows.items() if row.get_active()}
+            lang = scanform.OcrStatus.join_languages(self.lang_choices, selected)
+        return {"ocr_engine": self.engine.get_value() or "auto", "ocr_lang": lang}
+
+
+class ScannerPage(Adw.NavigationPage):
+    """All settings of one scanner (a subpage of the preferences)."""
+
+    LOOKUP_DELAY_MS = 800
+
+    def __init__(self, prefs, name):
+        window = prefs.window
+        app = window.app
+        values = prefs.profiles.get(name) or scanform.full_profile(app.shared_config, {})
+        super().__init__(title=name or _("New Scanner"))
+        self.prefs = prefs
+        self.old_name = name
+        self.removed = False
+        self.name_auto = not name  # propose the device name until the user types one
+        self._setting_name = False
+        self._lookup_source = 0
+        self._lookup_token = 0
+
+        ident = Adw.PreferencesGroup(title=_("Scanner"))
+        self.name_row = Adw.EntryRow(title=_("Name"), text=name or "")
+        self.name_row.connect("changed", self._name_changed)
+        self.host_row = Adw.EntryRow(title=_("Address (IP or host name; empty = find automatically)"),
+                                     text=values["host"])
+        self.model_row = Adw.EntryRow(title=_("Only scanners whose name contains"),
+                                      text=values["model"])
+        for entry in (self.host_row, self.model_row):
+            entry.connect("changed", lambda *_a: self._schedule_lookup())
+        self.device_row = Adw.ActionRow(title=_("Device"), css_classes=["property"])
+        is_default = name == prefs.default_name or not prefs.profiles
+        self.default_row = Adw.SwitchRow(title=_("Use by default"), active=is_default)
+        if is_default and name:
+            # There is always one default: choose another scanner to change it.
+            self.default_row.set_sensitive(False)
+            self.default_row.set_subtitle(_("To change, make another scanner the default"))
+        for widget in (self.name_row, self.host_row, self.model_row, self.device_row,
+                       self.default_row):
+            ident.add(widget)
+
+        connected = name is not None and name == app.config["scanner"] and window.device
+        self.settings = ScanSettings(values, window.choices if connected else
+                                     scanform.Choices.unknown(), app.ocr)
+        scan = Adw.PreferencesGroup(title=_("Scan settings"),
+                                    description=_("Used for every scan with this scanner."))
+        for row in self.settings.rows():
+            scan.add(row)
+
+        self.ocr_rows = OcrRows(values, app.ocr)
+        ocr = Adw.PreferencesGroup(
+            title=_("Text recognition (OCR)"),
+            description=None if app.ocr.available else app.ocr.INSTALL_HINT)
+        for row in self.ocr_rows.rows():
+            ocr.add(row)
+
+        saving = Adw.PreferencesGroup(title=_("Saving"))
+        self.folder = FolderRow(_("Folder"), values["outdir"] or scanform.documents_dir())
+        self.follow_documents = not values["outdir"]
+        self.filename = Adw.EntryRow(title=_("File name"), text=values["filename"])
+        hint = Adw.ActionRow(
+            subtitle=_("{date} and {time} are replaced with the scan date and time."),
+            css_classes=["property"])
+        for widget in (self.folder, self.filename, hint):
+            saving.add(widget)
+
+        page = Adw.PreferencesPage()
+        for group in (ident, scan, ocr, saving):
+            page.add(group)
+        if name:
+            actions = Adw.PreferencesGroup()
+            box = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
+            duplicate = Gtk.Button(label=_("Duplicate"))
+            duplicate.add_css_class("pill")
+            duplicate.connect("clicked", self._duplicate)
+            remove = Gtk.Button(label=_("Remove Scanner"))
+            remove.add_css_class("pill")
+            remove.add_css_class("destructive-action")
+            remove.connect("clicked", self._confirm_remove)
+            box.append(duplicate)
+            box.append(remove)
+            actions.add(box)
+            page.add(actions)
+
+        view = Adw.ToolbarView(content=page)
+        view.add_top_bar(Adw.HeaderBar())
+        self.set_child(view)
+        self.connect("hiding", lambda *_a: self.apply())
+        if connected:
+            self.device_row.set_subtitle(scanform.device_label(window.device))
+        else:
+            self._schedule_lookup()
+
+    # --- name and device lookup ----------------------------------------------
+
+    def _name_changed(self, *_args):
+        if not self._setting_name:
+            self.name_auto = False
+
+    def _set_name(self, text):
+        self._setting_name = True
+        self.name_row.set_text(text)
+        self._setting_name = False
+
+    def _schedule_lookup(self):
+        if self._lookup_source:
+            GLib.source_remove(self._lookup_source)
+            self._lookup_source = 0
+        host, model = self.host_row.get_text().strip(), self.model_row.get_text().strip()
+        if not host and not model:
+            self.device_row.set_subtitle(_("Found automatically when scanning"))
+            return
+        self.device_row.set_subtitle(_("Searching…"))
+        self._lookup_source = GLib.timeout_add(self.LOOKUP_DELAY_MS, self._lookup, host, model)
+
+    def _lookup(self, host, model):
+        self._lookup_source = 0
+        self._lookup_token += 1
+        token = self._lookup_token
+
+        def work():
+            device = wsdscan.find_scanner(host or None, model or None)
+            try:
+                return device, wsdscan.get_capabilities(device["service"])
+            except wsdscan.SoapFault as e:
+                raise wsdscan.ScanError(str(e))
+
+        def done(result):
+            if token != self._lookup_token or self.removed:
+                return  # an older lookup, or the page is gone
+            device, caps = result
+            name = scanform.device_name(device)
+            self.device_row.set_subtitle(scanform.device_label(device))
+            self.settings.apply_choices(scanform.Choices.from_capabilities(caps))
+            if self.name_auto and name:
+                others = {n: v for n, v in self.prefs.profiles.items() if n != self.old_name}
+                self._set_name(scanform.unique_scanner_name(name, others))
+
+        def failed(error):
+            if token == self._lookup_token:
+                self.device_row.set_subtitle(_("Not found: {error}").format(error=error))
+
+        run_in_thread(work, done, failed)
+        return GLib.SOURCE_REMOVE
+
+    # --- saving into the preferences --------------------------------------------
+
+    def values(self):
+        values = dict(self.settings.values(), **self.ocr_rows.values(),
+                      host=self.host_row.get_text().strip(),
+                      model=self.model_row.get_text().strip(),
+                      outdir=self.folder.folder, filename=self.filename.get_text().strip()
+                      or wsdscan.CONFIG_DEFAULTS["filename"])
+        if self.follow_documents and values["outdir"] == scanform.documents_dir():
+            values["outdir"] = ""  # keep following the Documents folder
+        return values
+
+    def chosen_name(self):
+        """The entered name, made valid and unique."""
+        others = {n: v for n, v in self.prefs.profiles.items() if n != self.old_name}
+        name = self.name_row.get_text().strip()
+        try:
+            wsdscan.check_scanner_name(name)
+        except ValueError:
+            name = ""
+        return scanform.unique_scanner_name(name or _("Scanner"), others)
+
+    def apply(self):
+        if self._lookup_source:
+            GLib.source_remove(self._lookup_source)
+            self._lookup_source = 0
+        self._lookup_token += 1  # ignore lookups still running
+        if self.removed:
+            return
+        name = self.chosen_name()
+        self.prefs.update_profile(self.old_name, name, self.values(),
+                                  self.default_row.get_active())
+        self.old_name = name
+
+    def _duplicate(self, *_args):
+        self.apply()
+        name = self.old_name
+        copy = scanform.unique_scanner_name(name, self.prefs.profiles)
+        self.prefs.update_profile(None, copy, dict(self.prefs.profiles[name]), False)
+        self.removed = True  # already applied; don't apply again when hidden
+        self.prefs.pop_subpage()
+        self.prefs.open_scanner(copy)
+
+    def _confirm_remove(self, *_args):
+        dialog = Adw.AlertDialog(
+            heading=_("Remove “{name}”?").format(name=self.old_name),
+            body=_("Its settings are deleted. The scanner itself is not affected."))
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("remove", _("Remove"))
+        dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.connect("response", self._remove_response)
+        dialog.present(self)
+
+    def _remove_response(self, _dialog, response):
+        if response == "remove":
+            self.removed = True
+            self.prefs.remove_profile(self.old_name)
+            self.prefs.pop_subpage()
+
+
 class PreferencesDialog(Adw.PreferencesDialog):
-    """Scanner, default scan settings and saving options; written to config.ini."""
+    """Scanners (each with all its settings) and app behavior; saved to config.ini."""
 
     def __init__(self, window):
         super().__init__(title=_("Preferences"), search_enabled=False)
         self.window = window
         app = window.app
-        cfg = app.shared_config  # [scan]: the defaults shared by all scanners
+        self.profiles, self.default_name, self.migrated = scanform.migrate_scanners(
+            app.shared_config, app.scanners, window.device if not app.scanners else None)
         page = Adw.PreferencesPage()
 
-        # Scanners ([scanner NAME] profiles)
-        self.profiles, self.default_name, self.migrated = scanform.migrate_scanners(
-            cfg, app.scanners)
         self.scanners_group = Adw.PreferencesGroup(title=_("Scanners"))
         buttons = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
         find = Gtk.Button(label=_("Find Scanners"))
         find.connect("clicked", self._find_scanners)
         add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text=_("Add Scanner"))
         add.add_css_class("flat")
-        add.connect("clicked", lambda *_a: self._edit_scanner(None))
+        add.connect("clicked", lambda *_a: self.open_scanner(None))
         buttons.append(find)
         buttons.append(add)
         self.scanners_group.set_header_suffix(buttons)
         self.scanner_rows: list[Gtk.Widget] = []
+        self.open_page: ScannerPage | None = None
         self._rebuild_scanners()
         self.found = Adw.PreferencesGroup(title=_("Scanners on the network"), visible=False)
         self.found_rows: list[Gtk.Widget] = []
 
-        self.settings = ScanSettings(cfg, window.choices, app.ocr, app.gui_config["review_pages"])
-        defaults = Adw.PreferencesGroup(title=_("Defaults for new scans"))
-        for row in self.settings.rows():
-            defaults.add(row)
-
-        saving = Adw.PreferencesGroup(title=_("Saving"))
-        self.folder = FolderRow(_("Folder"), cfg["outdir"] or scanform.documents_dir())
-        self.filename = Adw.EntryRow(title=_("File name"), text=cfg["filename"])
-        self.filename_hint = Adw.ActionRow(
-            subtitle=_("{date} and {time} are replaced with the scan date and time."),
-            css_classes=["property"])
+        behavior = Adw.PreferencesGroup(title=_("After scanning"))
         self.open_after = Adw.SwitchRow(title=_("Open PDF after scanning"),
                                         active=app.gui_config["open_after_scan"])
         self.notify_row = Adw.SwitchRow(title=_("Notify when a scan is done"),
-                                    subtitle=_("Only while the window is in the background"),
-                                    active=app.gui_config["notify"])
-        for row in (self.folder, self.filename, self.filename_hint, self.open_after, self.notify_row):
-            saving.add(row)
-
-        ocr = app.ocr
-        ocr_group = Adw.PreferencesGroup(
-            title=_("Text recognition (OCR)"),
-            description=None if ocr.available else ocr.INSTALL_HINT)
-        self.ocr_engine = ChoiceRow(_("Engine"), ocr.engine_options(), cfg["ocr_engine"])
-        # Languages: automatic, or picked from the installed ones.
-        self.ocr_auto = Adw.SwitchRow(
-            title=_("Choose languages automatically"),
-            subtitle=_("Currently: {langs}").format(langs=ocr.default_lang),
-            active=not cfg["ocr_lang"])
-        self.lang_choices = ocr.language_choices(cfg["ocr_lang"] or ocr.default_lang)
-        self.lang_rows = {}
-        for code, label, selected, installed in self.lang_choices:
-            row = Adw.SwitchRow(title=label, active=selected,
-                                subtitle="" if installed else _("Not installed"))
-            self.lang_rows[code] = row
-        self.ocr_auto.connect("notify::active", lambda *_a: self._sync_languages())
-        hint = Adw.ActionRow(
-            subtitle=_("More languages come as packages, e.g. “tesseract-ocr-fra” for French."),
-            css_classes=["property"])
-        for row in (self.ocr_engine, self.ocr_auto, *self.lang_rows.values(), hint):
-            row.set_sensitive(ocr.available)
-            ocr_group.add(row)
-        self._sync_languages()
+                                        subtitle=_("Only while the window is in the background"),
+                                        active=app.gui_config["notify"])
+        behavior.add(self.open_after)
+        behavior.add(self.notify_row)
 
         background = Adw.PreferencesGroup(title=_("Status bar"))
         self.tray_row = Adw.SwitchRow(title=_("Show icon in the status bar"),
@@ -849,10 +1057,11 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self._sync_background()
 
         cli = Adw.PreferencesGroup(
-            description=_("These settings are also the defaults of the wsdscan command. "
-                          "File: {path}").format(path=wsdscan.config_path()))
+            description=_("The scanners and their settings are shared with the wsdscan "
+                          "command (--scanner NAME). File: {path}").format(
+                              path=wsdscan.config_path()))
 
-        for group in (self.scanners_group, self.found, defaults, ocr_group, saving, background, cli):
+        for group in (self.scanners_group, self.found, behavior, background, cli):
             page.add(group)
         self.add(page)
         self.connect("closed", self._save)
@@ -863,19 +1072,27 @@ class PreferencesDialog(Adw.PreferencesDialog):
         if not tray:
             self.autostart_row.set_active(False)
 
-    def _sync_languages(self):
-        manual = self.window.app.ocr.available and not self.ocr_auto.get_active()
-        for row in self.lang_rows.values():
-            row.set_sensitive(manual)
-
-    def selected_ocr_lang(self):
-        """'' (automatic) or e.g. 'deu+eng'; no language selected = automatic."""
-        if self.ocr_auto.get_active():
-            return ""
-        selected = {code for code, row in self.lang_rows.items() if row.get_active()}
-        return scanform.OcrStatus.join_languages(self.lang_choices, selected)
-
     # --- scanner list -------------------------------------------------------
+
+    def open_scanner(self, name):
+        self.open_page = ScannerPage(self, name)
+        self.push_subpage(self.open_page)
+
+    def update_profile(self, old_name, new_name, values, make_default):
+        """Store a scanner's settings; keeps the list order when renaming."""
+        if old_name in self.profiles:
+            self.profiles = {(new_name if n == old_name else n): (values if n == old_name else v)
+                             for n, v in self.profiles.items()}
+        else:
+            self.profiles[new_name] = values
+        if make_default or self.default_name in (old_name, "") or \
+                self.default_name not in self.profiles:
+            self.default_name = new_name
+        self._rebuild_scanners()
+
+    def remove_profile(self, name):
+        self.profiles.pop(name, None)
+        self._rebuild_scanners()
 
     def _rebuild_scanners(self):
         for row in self.scanner_rows:
@@ -884,13 +1101,14 @@ class PreferencesDialog(Adw.PreferencesDialog):
         if self.profiles and self.default_name not in self.profiles:
             self.default_name = next(iter(self.profiles))
         self.scanners_group.set_description(
-            _("The marked scanner is used by default. Your own settings in the config file "
-              "for a scanner take precedence over the defaults below.") if self.profiles else
-            _("No scanner configured: Scan to PDF uses the one it finds on the network. "
-              "Add scanners to switch between them."))
+            _("Each scanner has its own settings. The marked one is used by default.")
+            if self.profiles else
+            _("No scanner configured yet. Add one, or let Find Scanners look on the network."))
         leader = None
-        for name, entries in self.profiles.items():
-            row = Adw.ActionRow(title=name, subtitle=scanform.scanner_subtitle(entries))
+        for name, values in self.profiles.items():
+            row = Adw.ActionRow(title=name, subtitle=scanform.scanner_subtitle(values),
+                                activatable=True)
+            row.connect("activated", lambda _r, n=name: self.open_scanner(n))
             radio = Gtk.CheckButton(active=name == self.default_name, valign=Gtk.Align.CENTER,
                                     tooltip_text=_("Use by default"))
             if leader:
@@ -898,71 +1116,18 @@ class PreferencesDialog(Adw.PreferencesDialog):
             leader = leader or radio
             radio.connect("toggled", self._default_toggled, name)
             row.add_prefix(radio)
-            for icon, tooltip, callback in (
-                    ("document-edit-symbolic", _("Edit"), self._edit_scanner),
-                    ("user-trash-symbolic", _("Remove"), self._remove_scanner)):
-                button = Gtk.Button(icon_name=icon, tooltip_text=tooltip, valign=Gtk.Align.CENTER)
-                button.add_css_class("flat")
-                button.connect("clicked", lambda _b, n=name, cb=callback: cb(n))
-                row.add_suffix(button)
+            remove = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text=_("Remove"),
+                                valign=Gtk.Align.CENTER)
+            remove.add_css_class("flat")
+            remove.connect("clicked", lambda _b, n=name: self.remove_profile(n))
+            row.add_suffix(remove)
+            row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
             self.scanners_group.add(row)
             self.scanner_rows.append(row)
 
     def _default_toggled(self, radio, name):
         if radio.get_active():
             self.default_name = name
-
-    def _remove_scanner(self, name):
-        self.profiles.pop(name, None)
-        self._rebuild_scanners()
-
-    def _edit_scanner(self, name):
-        """Add (name None) or edit a scanner: name, address, model filter."""
-        entries = self.profiles.get(name, {}) if name else {}
-        dialog = Adw.AlertDialog(heading=_("Edit Scanner") if name else _("Add Scanner"))
-        fields = Adw.PreferencesGroup()
-        name_row = Adw.EntryRow(title=_("Name"), text=name or scanform.unique_scanner_name(
-            _("Scanner"), self.profiles))
-        host_row = Adw.EntryRow(title=_("Address (IP or host name; empty = find automatically)"),
-                                text=entries.get("host", ""))
-        model_row = Adw.EntryRow(title=_("Only scanners whose name contains"),
-                                 text=entries.get("model", ""))
-        for row in (name_row, host_row, model_row):
-            fields.add(row)
-        dialog.set_extra_child(fields)
-        dialog.add_response("cancel", _("Cancel"))
-        dialog.add_response("save", _("Save") if name else _("Add"))
-        dialog.set_response_appearance("save", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_default_response("save")
-        dialog.connect("response", self._scanner_edited, name, name_row, host_row, model_row)
-        dialog.present(self)
-
-    def _scanner_edited(self, _dialog, response, old_name, name_row, host_row, model_row):
-        if response != "save":
-            return
-        new_name = name_row.get_text().strip()
-        try:
-            wsdscan.check_scanner_name(new_name)
-            if new_name != old_name and new_name in self.profiles:
-                raise ValueError(_("a scanner named “{name}” already exists").format(name=new_name))
-        except ValueError as e:
-            self.window.show_error(str(e), heading=_("Scanner not saved"))
-            return
-        entries = dict(self.profiles.get(old_name, {})) if old_name else {}
-        for key, row in (("host", host_row), ("model", model_row)):
-            value = row.get_text().strip()
-            if value:
-                entries[key] = value
-            else:
-                entries.pop(key, None)
-        # Keep the list order when renaming.
-        self.profiles = {(new_name if n == old_name else n): (entries if n == old_name else e)
-                         for n, e in self.profiles.items()}
-        if old_name is None:
-            self.profiles[new_name] = entries
-        if self.default_name == old_name or not self.default_name:
-            self.default_name = new_name
-        self._rebuild_scanners()
 
     def _find_scanners(self, button):
         button.set_sensitive(False)
@@ -975,15 +1140,13 @@ class PreferencesDialog(Adw.PreferencesDialog):
         def done(devices):
             button.set_sensitive(True)
             self.found.set_description(None)
-            known = {e.get("host") for e in self.profiles.values()}
+            known = {v.get("host") for v in self.profiles.values()}
             for device in devices:
                 host = wsdscan.urlsplit(device["device_url"]).hostname
-                row = Adw.ActionRow(title=f"{device['manufacturer']} {device['model']}",
-                                    subtitle=host)
-                add = Gtk.Button(label=_("Add"), valign=Gtk.Align.CENTER)
-                add.set_sensitive(host not in known)
-                if host in known:
-                    add.set_label(_("Added"))
+                row = Adw.ActionRow(title=scanform.device_name(device), subtitle=host)
+                # A scanner may be added several times, e.g. with different settings.
+                add = Gtk.Button(label=_("Add Again") if host in known else _("Add"),
+                                 valign=Gtk.Align.CENTER)
                 add.connect("clicked", self._add_found, device)
                 row.add_suffix(add)
                 self.found.add(row)
@@ -996,32 +1159,23 @@ class PreferencesDialog(Adw.PreferencesDialog):
         run_in_thread(lambda: wsdscan.discover(None), done, failed)
 
     def _add_found(self, button, device):
-        name, entries = scanform.scanner_from_device(device, self.profiles)
-        self.profiles[name] = entries
-        if not self.default_name:
-            self.default_name = name
-        button.set_sensitive(False)
-        button.set_label(_("Added"))
-        self._rebuild_scanners()
+        name, values = scanform.scanner_from_device(device, self.profiles,
+                                                    self.window.app.shared_config)
+        self.update_profile(None, name, values, False)
+        button.set_label(_("Add Again"))
 
     def _save(self, *_args):
+        if self.open_page:
+            self.open_page.apply()  # closed while a scanner page was shown
         app = self.window.app
         old = dict(app.config)  # effective settings before saving
-        shared = app.shared_config
-        values = dict(self.settings.values(), outdir=self.folder.folder,
-                      filename=self.filename.get_text().strip() or wsdscan.CONFIG_DEFAULTS["filename"],
-                      ocr_engine=self.ocr_engine.get_value() or shared["ocr_engine"],
-                      ocr_lang=self.selected_ocr_lang(),
-                      scanner=self.default_name if self.profiles else "")
+        shared = {"scanner": self.default_name if self.profiles else ""}
         if self.migrated:
-            values.update(host="", model="")  # now in the first [scanner NAME] profile
-        if values["outdir"] == scanform.documents_dir() and not shared["outdir"]:
-            values["outdir"] = ""  # keep following the Documents folder
+            shared.update(host="", model="")  # now part of the first scanner
         tray = self.tray_row.get_active()
         try:
-            app.save_config(values, {"open_after_scan": self.open_after.get_active(),
+            app.save_config(shared, {"open_after_scan": self.open_after.get_active(),
                                      "notify": self.notify_row.get_active(),
-                                     "review_pages": self.settings.review.get_active(),
                                      "tray": tray},
                             scanners=self.profiles)
             scanform.set_autostart(tray and self.autostart_row.get_active())
@@ -1195,6 +1349,17 @@ class ScanApp(Adw.Application):
         self.save_gui({"last_scanner": name})
         if self.window:
             self.window.apply_preferences(reconnect=True)
+
+    def save_scanner_settings(self, values):
+        """Save settings for the current scanner (or as shared defaults without one)."""
+        name = self.config["scanner"]
+        if not name:
+            self.save_config(values, {})
+            return
+        scanners = {n: scanform.full_profile(self.shared_config, v)
+                    for n, v in self.scanners.items()}
+        scanners[name].update(values)
+        self.save_config({}, {}, scanners=scanners)
 
     def save_config(self, values, gui, scanners=None):
         wsdscan.save_config(values, sections={"gui": gui}, scanners=scanners)

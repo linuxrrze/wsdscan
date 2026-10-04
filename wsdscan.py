@@ -1218,6 +1218,7 @@ CONFIG_DEFAULTS = {
     "ocr_engine": "auto",
     "ocr_lang": "",  # "" = system language + English
     "scanner": "",  # name of the default [scanner NAME] profile
+    "review_pages": False,  # desktop app: review pages before saving (ignored by the CLI)
 }
 SCANNER_SECTION = "scanner "  # profiles: [scanner Office], [scanner Home], ...
 CONFIG_CHOICES = {
@@ -1251,7 +1252,7 @@ def parse_config_value(key, text):
             raise ValueError(str(e))
     if key == "ocr_lang" and text and not re.fullmatch(r"[a-z_]+(\+[a-z_]+)*", text):
         raise ValueError("expected Tesseract language codes like deu+eng")
-    if key in ("lossless", "ocr"):
+    if key in ("lossless", "ocr", "review_pages"):
         if text.lower() not in ("true", "false", "yes", "no", "1", "0", "on", "off"):
             raise ValueError("expected true or false")
         return text.lower() in ("true", "yes", "1", "on")
@@ -1501,6 +1502,7 @@ def parse_args(argv=None):
     args = p.parse_args(argv)
     args.filename = cfg["filename"]
     args.scanner = cfg["scanner"]
+    args.review_pages = cfg["review_pages"]  # desktop app only; shown by --show-config
     return args
 
 

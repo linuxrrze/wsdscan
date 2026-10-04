@@ -50,6 +50,13 @@
   </supports>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.3.0" date="2026-10-04">
+      <description>
+        <p>Every scanner has its own settings and its own page in the preferences, with an
+        editable name (the device name is proposed), Duplicate and Remove. The main window
+        and the preferences use the same scanner names.</p>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-10-04">
       <description>
         <p>Several scanners: add, edit and remove them in the preferences, choose a default,

@@ -135,7 +135,7 @@ Precedence, highest first:
 4. `[scan]`
 5. built-in defaults
 
-Without `scanner =`, the first configured scanner is the default, unless `[scan]` itself sets `host` or `model`, as in older config files. The desktop app manages this list in its Preferences. All keys are described in [gui/README.md](gui/README.md#settings). An invalid value stops the command with the file name and key in the message.
+Without `scanner =`, the first configured scanner is the default, unless `[scan]` itself sets `host` or `model`, as in older config files. The desktop app manages this list in its Preferences and stores each scanner with all its settings. The same device can appear several times with different settings. The key `review_pages` belongs to the desktop app; this command ignores it. All keys are described in [gui/README.md](gui/README.md#settings). An invalid value stops the command with the file name and key in the message.
 
 ### Image quality and file size
 

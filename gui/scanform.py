@@ -18,7 +18,7 @@ _ = gettext.translation("wsdscan", fallback=True).gettext
 
 APP_ID = "io.github.wsdscan.ScanToPdf"
 APP_NAME = "Scan to PDF"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 # (value, label) pairs in display order.
 SOURCES = [("duplex", _("Both sides")), ("adf", _("One side"))]
@@ -29,7 +29,7 @@ DEFAULT_RESOLUTIONS = [100, 150, 200, 300, 600]
 
 # [gui] section of the shared config file.
 GUI_DEFAULTS = {"open_after_scan": False, "notify": True, "width": 480, "height": 720,
-                "tray": False, "review_pages": False, "last_scanner": ""}
+                "tray": False, "last_scanner": ""}
 
 
 def documents_dir():
@@ -213,15 +213,26 @@ def settings_summary(values, review=False):
 
 # --- Scanner profiles ([scanner NAME] sections) --------------------------------
 
+SCANNER_KEYS = [key for key in wsdscan.CONFIG_DEFAULTS if key != "scanner"]
+
+
+def full_profile(shared, entries):
+    """All settings of a scanner: its own values, the rest from [scan].
+
+    The address and model filter are never inherited: they identify the scanner.
+    """
+    profile = {key: entries.get(key, shared.get(key, wsdscan.CONFIG_DEFAULTS[key]))
+               for key in SCANNER_KEYS}
+    profile["host"] = entries.get("host", "")
+    profile["model"] = entries.get("model", "")
+    return profile
+
+
 def scanner_subtitle(entries):
     """'192.168.2.13', 'Found automatically' or with model filter / own settings."""
     parts = [entries.get("host") or _("Found automatically")]
     if entries.get("model"):
         parts.append(_("model “{model}”").format(model=entries["model"]))
-    own = [k for k in entries if k not in ("host", "model")]
-    if own:
-        parts.append(gettext.ngettext("{n} own setting", "{n} own settings", len(own))
-                     .format(n=len(own)))
     return " · ".join(parts)
 
 
@@ -236,23 +247,31 @@ def unique_scanner_name(base, existing):
     return f"{base} {n}"
 
 
-def scanner_from_device(device, existing):
-    """(name, entries) for a scanner found on the network."""
-    name = unique_scanner_name(f"{device['manufacturer']} {device['model']}".strip(), existing)
-    return name, {"host": wsdscan.urlsplit(device["device_url"]).hostname}
+def scanner_from_device(device, existing, shared):
+    """(name, settings) for a scanner found on the network; settings start
+    as a copy of the shared defaults."""
+    name = unique_scanner_name(device_name(device), existing)
+    return name, full_profile(shared, {"host": wsdscan.urlsplit(device["device_url"]).hostname})
 
 
-def migrate_scanners(shared, scanners):
-    """Profiles for the preferences. A host/model set directly in [scan] (older
-    versions, hand-edited files) becomes the first profile.
+def migrate_scanners(shared, scanners, device=None):
+    """Scanners for the preferences, each with all its settings.
+
+    Without configured scanners, the [scan] settings (older versions, or just
+    the connected scanner) become the first scanner, named after the device
+    if one is connected, e.g. 'EPSON ES-580W'.
 
     Returns (scanners, default_name, migrated).
     """
-    scanners = {name: dict(entries) for name, entries in scanners.items()}
-    if not scanners and (shared.get("host") or shared.get("model")):
+    scanners = {name: full_profile(shared, entries) for name, entries in scanners.items()}
+    if not scanners and (shared.get("host") or shared.get("model") or device):
         entries = {k: shared[k] for k in ("host", "model") if shared.get(k)}
-        name = unique_scanner_name(shared.get("model") or _("Scanner"), scanners)
-        return {name: entries}, name, True
+        if device and not entries:
+            entries["host"] = wsdscan.urlsplit(device["device_url"]).hostname
+        name = unique_scanner_name(
+            (device_name(device) if device else "") or shared.get("model") or _("Scanner"),
+            scanners)
+        return {name: full_profile(shared, entries)}, name, True
     default = wsdscan.default_scanner_name(shared, scanners)
     return scanners, default if default in scanners else "", False
 
@@ -401,11 +420,26 @@ def set_autostart(enabled, command=None):
         f.write(autostart_entry(command or launch_command()))
 
 
-def describe_scanner(device, caps):
-    """(title, subtitle) for the scanner row."""
-    title = f"{device['manufacturer']} {device['model']}".strip()
-    host = wsdscan.urlsplit(device["device_url"]).hostname
-    state = caps.get("state") or "?"
-    conditions = ", ".join(caps.get("conditions") or [])
-    subtitle = f"{host} · {state}" + (f" · {conditions}" if conditions else "")
-    return title, subtitle
+def device_name(device):
+    """'EPSON ES-580W': what the scanner calls itself."""
+    return f"{device.get('manufacturer') or ''} {device.get('model') or ''}".strip()
+
+
+def device_label(device):
+    """'EPSON ES-580W · 192.168.2.13'."""
+    return f"{device_name(device)} · {wsdscan.urlsplit(device['device_url']).hostname}"
+
+
+def describe_scanner(device, caps, name=""):
+    """(title, subtitle) for the main window's scanner row.
+
+    The title is the configured scanner name (as in the preferences), else the
+    device name; the subtitle adds the device (if named differently), address,
+    state and conditions.
+    """
+    title = name or device_name(device)
+    parts = [device_name(device)] if name and name != device_name(device) else []
+    parts.append(wsdscan.urlsplit(device["device_url"]).hostname)
+    parts.append(caps.get("state") or "?")
+    parts += caps.get("conditions") or []
+    return title, " · ".join(parts)

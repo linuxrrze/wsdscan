@@ -82,7 +82,7 @@ Otherwise it's greyed out, with this hint. The app checks for the tools when it 
 
 The switch's subtitle shows the engine and languages that will be used, e.g. "OCRmyPDF · eng+deu".
 
-By default, the app uses all installed languages, with your system language and English first. With more than 4 installed, it uses only the system language and English. To choose yourself, go to **Preferences → Text recognition**, turn off **Choose languages automatically**, and switch the languages on or off. This also changes the default of the `wsdscan` command. If text recognition fails, the PDF is still saved, without text, and a message explains why.
+By default, the app uses all installed languages, with your system language and English first. With more than 4 installed, it uses only the system language and English. To choose yourself, open the scanner's page in **Preferences**, turn off **Choose languages automatically** under Text recognition, and switch the languages on or off. This applies to that scanner, also in the `wsdscan` command. If text recognition fails, the PDF is still saved, without text, and a message explains why.
 
 ## Status bar and start at login
 
@@ -104,42 +104,59 @@ The icon uses the StatusNotifierItem D-Bus protocol directly, so it needs no ext
 
 ## Settings
 
+Every scanner has **its own settings**. Different scanners can be set up differently, and the same scanner can be configured several times under different names, e.g. "Office color" and "Office b/w".
+
 **Preferences** (Ctrl+,) has these sections:
-- **Scanners:** the list of your scanners. Each has a name, an address (empty = find it automatically) and an optional model filter.
-  - **+** adds a scanner; "Find Scanners" lists the WSD scanners on the network, and **Add** takes one over.
-  - The radio button marks the default scanner; the pencil edits, the bin removes.
-  - A scanner address from an older version becomes the first entry automatically.
-- **Defaults for new scans:** sides, color, resolution, paper size, lossless, brightness and contrast.
-- **Text recognition (OCR):** engine (Automatic, OCRmyPDF, Tesseract) and languages. **Choose languages automatically** is on by default and shows its current result. Turn it off to pick languages from the list of installed ones.
-- **Saving:** folder, file-name template (`{date}`, `{time}`), open the PDF after scanning, notify when done.
+- **Scanners:** the list of your scanners; the radio button marks the default. Click a scanner to open its page, or click the bin to remove it.
+  - **+** adds a scanner.
+  - **Find Scanners** lists the WSD scanners on the network; **Add** takes one over (**Add Again** for a second configuration of the same device).
+  - A scanner set up in an older version becomes the first entry automatically, named after the device, e.g. "EPSON ES-580W".
+- **After scanning:** open the PDF, notify when done.
+- **Status bar:** see above.
 
-With two or more scanners, the main window shows a **Scanner** selector at the top. The app remembers the one used last; the `wsdscan` command keeps using the default scanner.
+**A scanner's page** has:
+- **Scanner:**
+  - **Name:** editable. While you haven't typed one, the device's name ("EPSON ES-580W") is proposed as soon as the scanner answers.
+  - **Address:** empty = find it automatically.
+  - **Model filter.**
+  - **Device:** what was found at that address.
+  - **Use by default.**
+- **Scan settings:** sides, color, resolution, paper size, lossless, brightness/contrast, text recognition on/off, review pages. Once the device has answered, only what it supports is offered.
+- **Text recognition (OCR):** engine (Automatic, OCRmyPDF, Tesseract) and languages. **Choose languages automatically** is on by default and shows its current result. Turn it off to pick languages from the installed ones.
+- **Saving:** folder, file-name template (`{date}`, `{time}`).
+- **Duplicate** (a copy to configure differently) and **Remove Scanner**.
 
-The app starts with these defaults. Changes in the **Scan settings** dialog apply until you close the app, unless you save them as defaults there.
+With two or more scanners, the main window shows a **Scanner** selector at the top, with the same names as in the preferences. The app remembers the one used last; the `wsdscan` command uses the default scanner (or `--scanner NAME`).
+
+Changes in the main window's **Scan settings** dialog apply until you close the app. **Save for This Scanner** keeps them as that scanner's settings.
 
 The settings live in `~/.config/wsdscan/config.ini` and are **shared with the `wsdscan` command**:
-- `[scan]` holds the scanner and scan defaults, which the command also uses.
-- `[gui]` holds options that only the app uses.
+- `[scanner NAME]`: one section per scanner, with all its settings.
+- `[scan]`: names the default scanner. Its settings are used where no scanner is configured, e.g. by `wsdscan --host …`.
+- `[gui]`: options that only the app uses.
 
 ```ini
 [scan]
+scanner = Office color
+
+[scanner Office color]
 host = 192.168.2.13
-model =
-source = duplex
 mode = color
 resolution = 300
-paper = a4
-lossless = false
-brightness = default
-contrast = default
-outdir =
+ocr = true
+outdir = /home/me/Documents/Scans
 filename = scan_{date}_{time}.pdf
+
+[scanner Office b/w]
+host = 192.168.2.13
+mode = bw
+review_pages = true
 
 [gui]
 open_after_scan = false
 notify = true
-review_pages = false
 tray = false
+last_scanner = Office color
 ```
 
 | Key | Values | Notes |
@@ -158,8 +175,9 @@ tray = false
 | `ocr` | `true`, `false` | recognize text; needs OCRmyPDF or Tesseract |
 | `ocr_engine` | `auto`, `ocrmypdf`, `tesseract` | `auto` prefers OCRmyPDF |
 | `ocr_lang` | e.g. `deu+eng`, or empty | empty = automatic: all installed languages (system language and English first); only those two if more than 4 are installed |
+| `review_pages` | `true`, `false` | app only: review the pages before saving and OCR; the command ignores it |
 
-Scanners are stored as `[scanner NAME]` sections with `host` and `model`. A section may also hold that scanner's own values for any key above; these take precedence over `[scan]`. See [Multiple scanners](../README.md#multiple-scanners) in the main README.
+All keys except `scanner` can be set per scanner in `[scanner NAME]`; a scanner's values take precedence over `[scan]`. See [Multiple scanners](../README.md#multiple-scanners) in the main README.
 
 ## Desktop integration
 

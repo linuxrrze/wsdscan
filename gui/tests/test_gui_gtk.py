@@ -84,13 +84,14 @@ class GtkTest(unittest.TestCase):
         self.assertFalse(settings.ocr.get_active(), "configured, but not installed")
         self.assertIn("Install OCRmyPDF or Tesseract", settings.ocr.get_subtitle() or "")
 
-    def test_ocr_language_preferences(self):
+    def test_ocr_languages_per_scanner(self):
         from fake_ocr import make_ocr_bin
         bin_dir = make_ocr_bin(tempfile.mkdtemp(prefix="wsdscan-gtk-ocr-"), ["tesseract"])
         old_path = os.environ["PATH"]
         os.environ["PATH"] = bin_dir
         try:
-            wsdscan.save_config({"host": "192.0.2.1", "ocr_lang": ""})
+            wsdscan.save_config({"scanner": "A"}, scanners={"A": {"host": "192.0.2.1"},
+                                                            "B": {"host": "192.0.2.1"}})
             app = wsdscan_gui.ScanApp()
             app.register(None)
             app.activate()
@@ -98,18 +99,69 @@ class GtkTest(unittest.TestCase):
             assert window is not None
             prefs = wsdscan_gui.PreferencesDialog(window)
             prefs.present(window)
-            self.assertTrue(prefs.ocr_auto.get_active())
-            self.assertFalse(prefs.lang_rows["deu"].get_sensitive())
-            prefs.ocr_auto.set_active(False)
-            self.assertTrue(prefs.lang_rows["deu"].get_sensitive())
-            for code, row in prefs.lang_rows.items():
+            page = wsdscan_gui.ScannerPage(prefs, "B")
+            self.assertTrue(page.ocr_rows.auto.get_active())
+            self.assertFalse(page.ocr_rows.lang_rows["deu"].get_sensitive())
+            page.ocr_rows.auto.set_active(False)
+            self.assertTrue(page.ocr_rows.lang_rows["deu"].get_sensitive())
+            for code, row in page.ocr_rows.lang_rows.items():
                 row.set_active(code == "deu")
+            page.apply()
             prefs.close()
-            wait_for(lambda: app.config["ocr_lang"] == "deu")
-            self.assertEqual(wsdscan.load_config()["ocr_lang"], "deu")
+            wait_for(lambda: "B" in app.scanners and "ocr_lang" in app.scanners["B"])
+            self.assertEqual(wsdscan.load_config(scanner="B")["ocr_lang"], "deu")
+            self.assertEqual(wsdscan.load_config(scanner="A")["ocr_lang"], "", "per scanner")
             window.close()
         finally:
             os.environ["PATH"] = old_path
+
+    def test_scanner_page_settings_and_name(self):
+        with FakeScanner(model="ES-580W", formats=["exif", "tiff-single-uncompressed"],
+                         resolutions=[100, 300]) as fake:
+            wsdscan.save_config({"scanner": ""}, scanners={})
+            app = wsdscan_gui.ScanApp()
+            app.register(None)
+            app.activate()
+            window = app.window
+            assert window is not None
+            prefs = wsdscan_gui.PreferencesDialog(window)
+            prefs.present(window)
+            page = wsdscan_gui.ScannerPage(prefs, None)  # "Add Scanner"
+            page.LOOKUP_DELAY_MS = 10
+            page.host_row.set_text(fake.host)
+            # The device answers: name proposed, choices narrowed to the scanner.
+            wait_for(lambda: page.name_row.get_text() == "EPSON ES-580W")
+            self.assertEqual(page.settings.resolution.values, [100, 300])
+            page.settings.mode.set_value("bw")
+            page.apply()
+            self.assertEqual(list(prefs.profiles), ["EPSON ES-580W"])
+            self.assertEqual(prefs.profiles["EPSON ES-580W"]["mode"], "bw")
+            # Same device again with other settings, via Duplicate.
+            page = wsdscan_gui.ScannerPage(prefs, "EPSON ES-580W")
+            prefs.push_subpage(page)
+            page._duplicate()
+            self.assertEqual(list(prefs.profiles), ["EPSON ES-580W", "EPSON ES-580W 2"])
+            prefs.close()
+            wait_for(lambda: len(app.scanners) == 2)
+            self.assertEqual(wsdscan.load_config(scanner="EPSON ES-580W 2")["mode"], "bw")
+            window.close()
+
+    def test_typed_name_is_kept(self):
+        with FakeScanner(model="ES-580W") as fake:
+            wsdscan.save_config({"scanner": ""}, scanners={})
+            app = wsdscan_gui.ScanApp()
+            app.register(None)
+            app.activate()
+            window = app.window
+            assert window is not None
+            prefs = wsdscan_gui.PreferencesDialog(window)
+            page = wsdscan_gui.ScannerPage(prefs, None)
+            page.LOOKUP_DELAY_MS = 10
+            page.name_row.set_text("Office")
+            page.host_row.set_text(fake.host)
+            wait_for(lambda: "EPSON" in (page.device_row.get_subtitle() or ""))
+            self.assertEqual(page.name_row.get_text(), "Office")
+            window.close()
 
     def test_multiple_scanners(self):
         with FakeScanner(model="ES-580W") as office, \
@@ -144,7 +196,8 @@ class GtkTest(unittest.TestCase):
         assert window is not None
         prefs = wsdscan_gui.PreferencesDialog(window)
         prefs.present(window)
-        self.assertEqual(prefs.profiles, {"Scanner": {"host": "192.0.2.7"}})
+        self.assertEqual(list(prefs.profiles), ["Scanner"])
+        self.assertEqual(prefs.profiles["Scanner"]["host"], "192.0.2.7")
         prefs._add_found(Gtk.Button(), {"manufacturer": "Brother", "model": "ADS-1700W",
                                          "device_url": "http://192.0.2.8:80/WSD/DEVICE"})
         self.assertEqual(list(prefs.profiles), ["Scanner", "Brother ADS-1700W"])

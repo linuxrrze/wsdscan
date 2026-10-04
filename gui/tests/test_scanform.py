@@ -91,6 +91,12 @@ class ChoicesTest(unittest.TestCase):
         title, subtitle = scanform.describe_scanner(device, caps)
         self.assertEqual(title, "EPSON ES-580W")
         self.assertEqual(subtitle, "127.0.0.1 · Idle")
+        # Configured name: same title as in the preferences, device in the subtitle.
+        self.assertEqual(scanform.describe_scanner(device, caps, "Office"),
+                         ("Office", "EPSON ES-580W · 127.0.0.1 · Idle"))
+        self.assertEqual(scanform.describe_scanner(device, caps, "EPSON ES-580W"),
+                         ("EPSON ES-580W", "127.0.0.1 · Idle"))
+        self.assertEqual(scanform.device_label(device), "EPSON ES-580W · 127.0.0.1")
 
 
 class OcrStatusTest(unittest.TestCase):
@@ -214,7 +220,7 @@ class ScannerProfilesTest(unittest.TestCase):
         self.assertEqual(scanform.scanner_subtitle({"model": "ADS"}),
                          "Found automatically · model “ADS”")
         self.assertEqual(scanform.scanner_subtitle({"host": "h", "mode": "bw", "outdir": "/x"}),
-                         "h · 2 own settings")
+                         "h")
 
     def test_unique_name(self):
         self.assertEqual(scanform.unique_scanner_name("Office", {}), "Office")
@@ -227,22 +233,52 @@ class ScannerProfilesTest(unittest.TestCase):
     def test_from_device(self):
         device = {"manufacturer": "EPSON", "model": "ES-580W",
                   "device_url": "http://192.168.2.13:80/WSD/DEVICE"}
-        self.assertEqual(scanform.scanner_from_device(device, {}),
-                         ("EPSON ES-580W", {"host": "192.168.2.13"}))
-        self.assertEqual(scanform.scanner_from_device(device, {"EPSON ES-580W": {}})[0],
+        shared = dict(wsdscan.CONFIG_DEFAULTS, mode="gray", host="ignored")
+        name, profile = scanform.scanner_from_device(device, {}, shared)
+        self.assertEqual(name, "EPSON ES-580W")
+        self.assertEqual((profile["host"], profile["model"], profile["mode"]),
+                         ("192.168.2.13", "", "gray"))
+        self.assertEqual(set(profile), set(scanform.SCANNER_KEYS))
+        self.assertEqual(scanform.scanner_from_device(device, {"EPSON ES-580W": {}}, shared)[0],
                          "EPSON ES-580W 2")
 
+    def test_full_profile(self):
+        shared = dict(wsdscan.CONFIG_DEFAULTS, mode="gray", host="10.0.0.1", ocr=True)
+        profile = scanform.full_profile(shared, {"host": "10.0.0.2", "mode": "bw"})
+        self.assertEqual((profile["host"], profile["mode"], profile["ocr"], profile["model"]),
+                         ("10.0.0.2", "bw", True, ""))
+        self.assertEqual(scanform.full_profile(shared, {})["host"], "", "address not inherited")
+        self.assertNotIn("scanner", profile)
+
     def test_migrate_single_scanner_from_scan_section(self):
-        shared = dict(wsdscan.CONFIG_DEFAULTS, host="192.168.2.13", model="ES-580W")
-        self.assertEqual(scanform.migrate_scanners(shared, {}),
-                         ({"ES-580W": {"host": "192.168.2.13", "model": "ES-580W"}}, "ES-580W", True))
+        shared = dict(wsdscan.CONFIG_DEFAULTS, host="192.168.2.13", model="ES-580W", mode="bw")
+        scanners, default, migrated = scanform.migrate_scanners(shared, {})
+        self.assertEqual((list(scanners), default, migrated), (["ES-580W"], "ES-580W", True))
+        self.assertEqual((scanners["ES-580W"]["host"], scanners["ES-580W"]["mode"]),
+                         ("192.168.2.13", "bw"), "keeps its settings")
         empty = dict(wsdscan.CONFIG_DEFAULTS)
         self.assertEqual(scanform.migrate_scanners(empty, {}), ({}, "", False))
+
+    def test_migrate_names_after_connected_device(self):
+        # Regression: an address-only setup became "Scanner" in the preferences
+        # while the main window showed "EPSON ES-580W".
+        device = {"manufacturer": "EPSON", "model": "ES-580W",
+                  "device_url": "http://192.168.2.13:80/WSD/DEVICE"}
+        shared = dict(wsdscan.CONFIG_DEFAULTS, host="192.168.2.13")
+        scanners, default, _m = scanform.migrate_scanners(shared, {}, device)
+        self.assertEqual(default, "EPSON ES-580W")
+        self.assertEqual(scanners["EPSON ES-580W"]["host"], "192.168.2.13")
+        # Found automatically (no address configured): keep the found address.
+        scanners, _d, _m = scanform.migrate_scanners(dict(wsdscan.CONFIG_DEFAULTS), {}, device)
+        self.assertEqual(scanners["EPSON ES-580W"]["host"], "192.168.2.13")
 
     def test_existing_profiles_and_default(self):
         profiles = {"A": {"host": "1"}, "B": {"host": "2"}}
         shared = dict(wsdscan.CONFIG_DEFAULTS, scanner="B")
-        self.assertEqual(scanform.migrate_scanners(shared, profiles), (profiles, "B", False))
+        scanners, default, migrated = scanform.migrate_scanners(shared, profiles)
+        self.assertEqual((list(scanners), default, migrated), (["A", "B"], "B", False))
+        self.assertEqual(scanners["B"]["host"], "2")
+        self.assertEqual(set(scanners["B"]), set(scanform.SCANNER_KEYS), "complete settings")
         shared["scanner"] = "Gone"
         self.assertEqual(scanform.migrate_scanners(shared, profiles)[1], "")
         self.assertEqual(scanform.migrate_scanners(dict(wsdscan.CONFIG_DEFAULTS), profiles)[1], "A")
