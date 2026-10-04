@@ -72,9 +72,14 @@ class TrayTest(unittest.TestCase):
         return icon
 
     def call(self, path, iface, method, params, reply_type):
-        return self.host.call_sync(self.registered[0], path, iface, method, params,
-                                   GLib.VariantType.new(reply_type), Gio.DBusCallFlags.NONE,
-                                   2000, None).unpack()
+        """D-Bus call to the icon. Asynchronous: the icon answers from this
+        thread's main loop (in real use the status bar is another process)."""
+        result = []
+        self.host.call(self.registered[0], path, iface, method, params,
+                       GLib.VariantType.new(reply_type), Gio.DBusCallFlags.NONE, 2000, None,
+                       lambda conn, res: result.append(conn.call_finish(res)))
+        spin(lambda: result)
+        return result[0].unpack()
 
     def test_registers_and_serves_item_and_menu(self):
         self.start_watcher()
@@ -111,7 +116,9 @@ class TrayTest(unittest.TestCase):
         self.call("/StatusNotifierItem", "org.kde.StatusNotifierItem", "Activate",
                   GLib.Variant("(ii)", (0, 0)), "()")
         spin(lambda: len(self.actions) >= 2)
-        self.assertEqual(self.actions, ["open", "quit"], "disabled Scan ignored")
+        # Menu clicks run deferred (they may open windows or quit), a click on
+        # the icon itself immediately: compare without order.
+        self.assertEqual(sorted(self.actions), ["open", "quit"], "disabled Scan ignored")
 
     def test_no_watcher_means_unavailable(self):
         icon = self.make_tray()

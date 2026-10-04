@@ -4,6 +4,10 @@ A desktop app for GNOME, KDE Plasma and Ubuntu that scans every sheet in your ne
 
 It uses GTK 4 and libadwaita, so it looks native on GNOME and Ubuntu Desktop. On KDE Plasma it uses KDE's own file dialogs (through desktop portals) and follows the light/dark setting.
 
+| After a scan, with text recognition | Reviewing pages before saving | A scanner's settings |
+|---|---|---|
+| ![Main window after a scan](../docs/screenshots/main-window.png) | ![Review step with a blank page unticked](../docs/screenshots/review-pages.png) | ![Scanner page in the preferences](../docs/screenshots/scanner-settings.png) |
+
 ## Install
 
 **1. Dependencies** (Python 3.9+, GTK 4.12+, libadwaita 1.5+ and their Python bindings; preinstalled on most GNOME and Ubuntu desktops):
@@ -217,7 +221,14 @@ gui/
 ├── install.sh         installer for users or the whole system; --dist builds a package
 ├── wsdscan.py         → ../wsdscan.py (link; the installer and --dist copy the real file)
 ├── data/              .desktop file, AppStream metainfo, app icon, status bar icon
+├── tools/             screenshots.py: makes the screenshots in docs/screenshots
 └── tests/             tests for the logic and desktop files; GTK and D-Bus tests
+```
+
+Screenshots: `docs/screenshots/` is made with `gui/tools/screenshots.py`. It drives the real app against the fake scanner from `tests/`, with document-like pages and fake OCR tools, and needs GTK 4 and a display:
+
+```sh
+python3 gui/tools/screenshots.py docs/screenshots
 ```
 
 Tests, from the repository root:

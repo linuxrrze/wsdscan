@@ -49,6 +49,12 @@ def wait_for(check, timeout=20.0):
 
 @unittest.skipUnless(GTK_OK, "needs GTK 4.12+, libadwaita 1.5+ and a display")
 class GtkTest(unittest.TestCase):
+    def setUp(self):
+        # Every test starts with an empty config file: scanners saved by one
+        # test must not leak into the next.
+        if os.path.exists(os.environ["WSDSCAN_CONFIG"]):
+            os.remove(os.environ["WSDSCAN_CONFIG"])
+
     def test_scan_settings_rows(self):
         Adw.init()
         settings = wsdscan_gui.ScanSettings(dict(wsdscan.CONFIG_DEFAULTS),
@@ -177,10 +183,14 @@ class GtkTest(unittest.TestCase):
             wait_for(lambda: window.device is not None)
             self.assertTrue(window.scanner_choice.get_visible())
             self.assertEqual(window.scanner_choice.values, ["Office", "Home"])
-            self.assertEqual(window.scanner_row.get_title(), "EPSON ES-580W")
+            # Same name as in the preferences; the device in the subtitle.
+            self.assertEqual(window.scanner_row.get_title(), "Office")
+            self.assertTrue((window.scanner_row.get_subtitle() or "").startswith("EPSON ES-580W · "))
             window.scanner_choice.set_value("Home")
             wait_for(lambda: window.device is not None and "ADS" in window.device["model"])
             self.assertEqual(window.settings.mode.get_value(), "bw", "the scanner's own default")
+            # Regression: "&" was parsed as markup, so the summary stayed empty.
+            self.assertIn("Black & white", window.settings_row.get_subtitle() or "")
             self.assertEqual(scanform.load_gui_config()["last_scanner"], "Home")
             window.close()
         # Next start: the scanner used last.

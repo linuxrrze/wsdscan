@@ -18,7 +18,7 @@ _ = gettext.translation("wsdscan", fallback=True).gettext
 
 APP_ID = "io.github.wsdscan.ScanToPdf"
 APP_NAME = "Scan to PDF"
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 # (value, label) pairs in display order.
 SOURCES = [("duplex", _("Both sides")), ("adf", _("One side"))]
@@ -30,6 +30,14 @@ DEFAULT_RESOLUTIONS = [100, 150, 200, 300, 600]
 # [gui] section of the shared config file.
 GUI_DEFAULTS = {"open_after_scan": False, "notify": True, "width": 480, "height": 720,
                 "tray": False, "last_scanner": ""}
+
+
+def display_path(path):
+    """Show folders in the home folder as '~/Documents/Scans'."""
+    home = os.path.expanduser("~")
+    if path == home or path.startswith(home.rstrip("/") + "/"):
+        return "~" + path[len(home.rstrip("/")):]
+    return path
 
 
 def documents_dir():

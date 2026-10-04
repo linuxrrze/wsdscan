@@ -65,7 +65,7 @@ class ChoiceRow(Adw.ComboRow):
     """Combo row over (value, label) pairs."""
 
     def __init__(self, title, options, value):
-        super().__init__(title=title)
+        super().__init__(title=title, use_markup=False)
         self.values = []
         self.set_options(options, value)
 
@@ -97,23 +97,25 @@ class ScanSettings:
         self.resolution = ChoiceRow(_("Resolution"), self._resolution_options(),
                                     choices.pick_resolution(values["resolution"]))
         self.paper = ChoiceRow(_("Paper size"), scanform.PAPERS, values["paper"])
-        self.lossless = Adw.SwitchRow(title=_("Lossless"))
-        self.exposure = Adw.ExpanderRow(title=_("Adjust brightness and contrast"),
+        self.lossless = Adw.SwitchRow(use_markup=False, title=_("Lossless"))
+        self.exposure = Adw.ExpanderRow(use_markup=False, title=_("Adjust brightness and contrast"),
                                         subtitle=_("Experimental; off = scanner default"),
                                         show_enable_switch=True)
         self.brightness = Adw.SpinRow.new_with_range(wsdscan.EXPOSURE_RANGE[0],
                                                      wsdscan.EXPOSURE_RANGE[1], 50)
         self.brightness.set_title(_("Brightness"))
+        self.brightness.set_use_markup(False)
         self.contrast = Adw.SpinRow.new_with_range(wsdscan.EXPOSURE_RANGE[0],
                                                    wsdscan.EXPOSURE_RANGE[1], 50)
         self.contrast.set_title(_("Contrast"))
+        self.contrast.set_use_markup(False)
         self.exposure.add_row(self.brightness)
         self.exposure.add_row(self.contrast)
         self.set_exposure(values["brightness"], values["contrast"])
-        self.ocr = Adw.SwitchRow(title=_("Recognize text (OCR)"))
+        self.ocr = Adw.SwitchRow(use_markup=False, title=_("Recognize text (OCR)"))
         self.set_ocr(values)
         self.review = Adw.SwitchRow(
-            title=_("Review pages before saving"),
+            use_markup=False, title=_("Review pages before saving"),
             subtitle=_("Remove single pages before saving and text recognition"),
             active=bool(values["review_pages"]))
 
@@ -201,9 +203,9 @@ class FolderRow(Adw.ActionRow):
     """Shows a folder; the button opens the (portal) folder chooser."""
 
     def __init__(self, title, folder):
-        super().__init__(title=title)
+        super().__init__(title=title, use_markup=False)
         self.folder = folder
-        self.set_subtitle(folder)
+        self.set_subtitle(scanform.display_path(folder))
         button = Gtk.Button(icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER,
                             tooltip_text=_("Choose folder"))
         button.add_css_class("flat")
@@ -226,24 +228,29 @@ class FolderRow(Adw.ActionRow):
 
     def set_folder(self, folder):
         self.folder = folder
-        self.set_subtitle(folder)
+        self.set_subtitle(scanform.display_path(folder))
 
 
 def make_thumbnail(data):
-    """Decode a scanned page at preview size; runs in the scan thread. None if not possible."""
-    loader = GdkPixbuf.PixbufLoader()
+    """Decode a scanned page at preview size; runs in the scan thread. None if not possible.
 
-    def size_prepared(_loader, width, height):
-        if height > THUMB_HEIGHT:  # decode scaled down: a full page can be 26 MB
-            _loader.set_size(max(1, width * THUMB_HEIGHT // height), THUMB_HEIGHT)
-
-    loader.connect("size-prepared", size_prepared)
+    Uses GTK's own JPEG/TIFF decoder: gdk-pixbuf's loaders are optional and
+    may be missing (newer versions delegate to the glycin loaders).
+    """
     try:
-        loader.write(data)
-        loader.close()
+        texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
     except GLib.Error:
         return None
-    return loader.get_pixbuf()
+    width, height = texture.get_width(), texture.get_height()
+    downloader = Gdk.TextureDownloader.new(texture)
+    downloader.set_format(Gdk.MemoryFormat.R8G8B8A8)
+    pixels, stride = downloader.download_bytes()
+    pixbuf = GdkPixbuf.Pixbuf.new_from_bytes(pixels, GdkPixbuf.Colorspace.RGB, True, 8,
+                                             width, height, stride)
+    if height <= THUMB_HEIGHT:
+        return pixbuf
+    return pixbuf.scale_simple(max(1, width * THUMB_HEIGHT // height), THUMB_HEIGHT,
+                               GdkPixbuf.InterpType.BILINEAR)
 
 
 def pixbuf_texture(pixbuf):
@@ -328,7 +335,7 @@ class MainWindow(Adw.ApplicationWindow):
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu,
                                        primary=True, tooltip_text=_("Main Menu")))
 
-        self.banner = Adw.Banner(button_label=_("Preferences"))
+        self.banner = Adw.Banner(use_markup=False, button_label=_("Preferences"))
         self.banner.connect("button-clicked", lambda *_a: app.activate_action("preferences", None))
 
         # Scanner: selector (with two or more configured scanners) and status
@@ -336,7 +343,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.scanner_choice.set_visible(False)
         self._updating_choice = False
         self.scanner_choice.connect("notify::selected", self._scanner_chosen)
-        self.scanner_row = Adw.ActionRow(title=_("Scanner"), subtitle=_("Searching…"))
+        self.scanner_row = Adw.ActionRow(use_markup=False, title=_("Scanner"), subtitle=_("Searching…"))
         self.scanner_row.add_prefix(Gtk.Image(icon_name="scanner-symbolic"))
         self.spinner = Gtk.Spinner(spinning=True, valign=Gtk.Align.CENTER)
         self.scanner_row.add_suffix(self.spinner)
@@ -346,13 +353,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.refresh_scanner_choice()
 
         # Document
-        self.name_row = Adw.EntryRow(title=_("File name"))
+        self.name_row = Adw.EntryRow(use_markup=False, title=_("File name"))
         self.name_row.connect("entry-activated",
                               lambda *_a: self.activate_action("win.scan", None))
         self.folder_row = FolderRow(_("Folder"), cfg["outdir"] or scanform.documents_dir())
         # Scan settings: summary here, the rows live in ScanSettingsDialog.
         self.settings = ScanSettings(cfg, self.choices, app.ocr)
-        self.settings_row = Adw.ActionRow(title=_("Scan settings"), activatable=True,
+        self.settings_row = Adw.ActionRow(use_markup=False, title=_("Scan settings"), activatable=True,
                                           action_name="win.scan-settings")
         self.settings_row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
         doc_group = Adw.PreferencesGroup(title=_("Document"))
@@ -389,6 +396,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         # Page preview
         self.tiles = []
+        self.last_toast = None  # "Saved …" of the previous scan
         self.review = None      # (threading.Event, result dict) while reviewing
         self.ocr_tiles = []     # tiles of the pages being recognized
         self.ocr_total = 0
@@ -425,14 +433,22 @@ class MainWindow(Adw.ApplicationWindow):
     def refresh_scanner_choice(self):
         names = list(self.app.scanners)
         self._updating_choice = True
-        self.scanner_choice.set_options([(n, n) for n in names], self.app.config["scanner"])
+        if names == self.scanner_choice.values:
+            self.scanner_choice.set_value(self.app.config["scanner"])
+        else:
+            self.scanner_choice.set_options([(n, n) for n in names], self.app.config["scanner"])
         self._updating_choice = False
         self.scanner_choice.set_visible(len(names) >= 2)
 
     def _scanner_chosen(self, *_args):
         name = self.scanner_choice.get_value()
         if not self._updating_choice and name and name != self.app.config["scanner"]:
-            self.app.select_scanner(name)
+            # Not inside the combo row's own signal: switching rebuilds its list,
+            # which crashed GTK while the selection was still being changed.
+            def switch():
+                self.app.select_scanner(name)
+                return GLib.SOURCE_REMOVE
+            GLib.idle_add(switch)
 
     def _add_action(self, name, callback):
         action = Gio.SimpleAction.new(name, None)
@@ -604,6 +620,9 @@ class MainWindow(Adw.ApplicationWindow):
         values = dict(self.app.config, **self.settings.scan_values())
         args = scanform.scan_args(values)
         review = self.settings.review.get_active()
+        if self.last_toast:
+            self.last_toast.dismiss()  # belongs to the previous scan
+            self.last_toast = None
         self.cancel_event = threading.Event()
         cancel = self.cancel_event
         self.clear_pages()
@@ -661,9 +680,10 @@ class MainWindow(Adw.ApplicationWindow):
         else:
             message = _("Scan stopped early; saved {pages} pages as “{name}”").format(
                 pages=pages, name=name)
-        toast = Adw.Toast(title=message, button_label=_("Open"), action_name="app.open-file",
+        toast = Adw.Toast(use_markup=False, title=message, button_label=_("Open"), action_name="app.open-file",
                           action_target=GLib.Variant("s", out), timeout=8)
         self.toasts.add_toast(toast)
+        self.last_toast = toast
         self.new_file_name()
         if ocr_error:
             self.show_error(_("{error}\n\nThe scan was saved without recognized text.").format(
@@ -685,7 +705,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_progress("")
         if isinstance(error, wsdscan.ScanCancelled):
             self.clear_pages()
-            self.toasts.add_toast(Adw.Toast(title=_("Scan discarded")
+            self.toasts.add_toast(Adw.Toast(use_markup=False, title=_("Scan discarded")
                                             if "discarded" in str(error) or "removed" in str(error)
                                             else _("Scan cancelled")))
             return
@@ -699,6 +719,11 @@ class MainWindow(Adw.ApplicationWindow):
     def apply_preferences(self, reconnect):
         cfg = self.app.config
         self.refresh_scanner_choice()
+        if reconnect:
+            # Another scanner may offer what the previous one did not (e.g. black &
+            # white): offer everything until the new scanner has answered.
+            self.choices = scanform.Choices.unknown()
+            self.settings.apply_choices(self.choices)
         self.settings.set_values(cfg)
         self.update_summary()
         self.folder_row.set_folder(cfg["outdir"] or scanform.documents_dir())
@@ -741,7 +766,7 @@ class ScanSettingsDialog(Adw.Dialog):
 
     def _reset(self, *_args):
         self.window.settings.set_values(self.window.app.config)
-        self.toasts.add_toast(Adw.Toast(title=_("Defaults restored")))
+        self.toasts.add_toast(Adw.Toast(use_markup=False, title=_("Defaults restored")))
 
     def _save_defaults(self, *_args):
         try:
@@ -749,7 +774,7 @@ class ScanSettingsDialog(Adw.Dialog):
         except (ValueError, OSError) as e:
             self.window.show_error(_("Could not save the defaults: {error}").format(error=e))
             return
-        self.toasts.add_toast(Adw.Toast(title=_("Saved as defaults of “{name}”").format(
+        self.toasts.add_toast(Adw.Toast(use_markup=False, title=_("Saved as defaults of “{name}”").format(
             name=self.window.app.config["scanner"]) if self.window.app.config["scanner"]
             else _("Saved as defaults")))
 
@@ -767,16 +792,16 @@ class OcrRows:
         self.ocr = ocr
         self.engine = ChoiceRow(_("Engine"), ocr.engine_options(), values["ocr_engine"])
         self.auto = Adw.SwitchRow(
-            title=_("Choose languages automatically"),
+            use_markup=False, title=_("Choose languages automatically"),
             subtitle=_("Currently: {langs}").format(langs=ocr.default_lang),
             active=not values["ocr_lang"])
         self.lang_choices = ocr.language_choices(values["ocr_lang"] or ocr.default_lang)
         self.lang_rows = {}
         for code, label, selected, installed in self.lang_choices:
             self.lang_rows[code] = Adw.SwitchRow(
-                title=label, active=selected, subtitle="" if installed else _("Not installed"))
+                use_markup=False, title=label, active=selected, subtitle="" if installed else _("Not installed"))
         self.hint = Adw.ActionRow(
-            subtitle=_("More languages come as packages, e.g. “tesseract-ocr-fra” for French."),
+            use_markup=False, subtitle=_("More languages come as packages, e.g. “tesseract-ocr-fra” for French."),
             css_classes=["property"])
         self.auto.connect("notify::active", lambda *_a: self._sync())
         for row in self.rows():
@@ -819,17 +844,17 @@ class ScannerPage(Adw.NavigationPage):
         self._lookup_token = 0
 
         ident = Adw.PreferencesGroup(title=_("Scanner"))
-        self.name_row = Adw.EntryRow(title=_("Name"), text=name or "")
+        self.name_row = Adw.EntryRow(use_markup=False, title=_("Name"), text=name or "")
         self.name_row.connect("changed", self._name_changed)
-        self.host_row = Adw.EntryRow(title=_("Address (IP or host name; empty = find automatically)"),
+        self.host_row = Adw.EntryRow(use_markup=False, title=_("Address (IP or host name; empty = find automatically)"),
                                      text=values["host"])
-        self.model_row = Adw.EntryRow(title=_("Only scanners whose name contains"),
+        self.model_row = Adw.EntryRow(use_markup=False, title=_("Only scanners whose name contains"),
                                       text=values["model"])
         for entry in (self.host_row, self.model_row):
             entry.connect("changed", lambda *_a: self._schedule_lookup())
-        self.device_row = Adw.ActionRow(title=_("Device"), css_classes=["property"])
+        self.device_row = Adw.ActionRow(use_markup=False, title=_("Device"), css_classes=["property"])
         is_default = name == prefs.default_name or not prefs.profiles
-        self.default_row = Adw.SwitchRow(title=_("Use by default"), active=is_default)
+        self.default_row = Adw.SwitchRow(use_markup=False, title=_("Use by default"), active=is_default)
         if is_default and name:
             # There is always one default: choose another scanner to change it.
             self.default_row.set_sensitive(False)
@@ -856,9 +881,9 @@ class ScannerPage(Adw.NavigationPage):
         saving = Adw.PreferencesGroup(title=_("Saving"))
         self.folder = FolderRow(_("Folder"), values["outdir"] or scanform.documents_dir())
         self.follow_documents = not values["outdir"]
-        self.filename = Adw.EntryRow(title=_("File name"), text=values["filename"])
+        self.filename = Adw.EntryRow(use_markup=False, title=_("File name"), text=values["filename"])
         hint = Adw.ActionRow(
-            subtitle=_("{date} and {time} are replaced with the scan date and time."),
+            use_markup=False, subtitle=_("{date} and {time} are replaced with the scan date and time."),
             css_classes=["property"])
         for widget in (self.folder, self.filename, hint):
             saving.add(widget)
@@ -1030,16 +1055,16 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self.found_rows: list[Gtk.Widget] = []
 
         behavior = Adw.PreferencesGroup(title=_("After scanning"))
-        self.open_after = Adw.SwitchRow(title=_("Open PDF after scanning"),
+        self.open_after = Adw.SwitchRow(use_markup=False, title=_("Open PDF after scanning"),
                                         active=app.gui_config["open_after_scan"])
-        self.notify_row = Adw.SwitchRow(title=_("Notify when a scan is done"),
+        self.notify_row = Adw.SwitchRow(use_markup=False, title=_("Notify when a scan is done"),
                                         subtitle=_("Only while the window is in the background"),
                                         active=app.gui_config["notify"])
         behavior.add(self.open_after)
         behavior.add(self.notify_row)
 
         background = Adw.PreferencesGroup(title=_("Status bar"))
-        self.tray_row = Adw.SwitchRow(title=_("Show icon in the status bar"),
+        self.tray_row = Adw.SwitchRow(use_markup=False, title=_("Show icon in the status bar"),
                                       active=app.gui_config["tray"])
         if app.status_bar_host_present():
             self.tray_row.set_subtitle(_("Closing the window keeps Scan to PDF running there."))
@@ -1048,7 +1073,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
                 _("Your desktop shows no status bar icons right now. On GNOME, install the "
                   "“AppIndicator and KStatusNotifierItem Support” extension."))
         self.autostart_row = Adw.SwitchRow(
-            title=_("Start at login"),
+            use_markup=False, title=_("Start at login"),
             subtitle=_("In the status bar, without opening the window"),
             active=scanform.autostart_enabled())
         self.tray_row.connect("notify::active", lambda *_a: self._sync_background())
@@ -1106,7 +1131,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
             _("No scanner configured yet. Add one, or let Find Scanners look on the network."))
         leader = None
         for name, values in self.profiles.items():
-            row = Adw.ActionRow(title=name, subtitle=scanform.scanner_subtitle(values),
+            row = Adw.ActionRow(use_markup=False, title=name, subtitle=scanform.scanner_subtitle(values),
                                 activatable=True)
             row.connect("activated", lambda _r, n=name: self.open_scanner(n))
             radio = Gtk.CheckButton(active=name == self.default_name, valign=Gtk.Align.CENTER,
@@ -1143,7 +1168,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
             known = {v.get("host") for v in self.profiles.values()}
             for device in devices:
                 host = wsdscan.urlsplit(device["device_url"]).hostname
-                row = Adw.ActionRow(title=scanform.device_name(device), subtitle=host)
+                row = Adw.ActionRow(use_markup=False, title=scanform.device_name(device), subtitle=host)
                 # A scanner may be added several times, e.g. with different settings.
                 add = Gtk.Button(label=_("Add Again") if host in known else _("Add"),
                                  valign=Gtk.Align.CENTER)

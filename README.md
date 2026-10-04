@@ -235,6 +235,10 @@ The tests never read your real config file. The desktop app's tests are in `gui/
 
 Install it with `gui/install.sh`, which also installs this tool as the `wsdscan` command. See [gui/README.md](gui/README.md).
 
+| After a scan, with text recognition | Reviewing pages before saving | A scanner's settings |
+|---|---|---|
+| ![Main window after a scan](docs/screenshots/main-window.png) | ![Review step with a blank page unticked](docs/screenshots/review-pages.png) | ![Scanner page in the preferences](docs/screenshots/scanner-settings.png) |
+
 ## License
 
 Copyright (C) 2026 Marcel Ritter

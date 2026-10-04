@@ -201,6 +201,13 @@ class FormTest(unittest.TestCase):
         self.assertEqual((cfg["open_after_scan"], cfg["width"], cfg["notify"]), (True, 600, True))
         os.remove(wsdscan.config_path())
 
+    def test_display_path(self):
+        with mock.patch.dict(os.environ, {"HOME": "/home/anna"}):
+            self.assertEqual(scanform.display_path("/home/anna/Documents/Scans"), "~/Documents/Scans")
+            self.assertEqual(scanform.display_path("/home/anna"), "~")
+            self.assertEqual(scanform.display_path("/home/annabel/x"), "/home/annabel/x")
+            self.assertEqual(scanform.display_path("/srv/scans"), "/srv/scans")
+
     def test_documents_dir(self):
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}):
             with mock.patch("subprocess.run", side_effect=OSError):
@@ -379,6 +386,16 @@ class DesktopFilesTest(unittest.TestCase):
         self.assertIn("wsdscan-gui", [b.text for b in root.iter("binary")])
         self.assertEqual(root.find("releases/release").get("version"), scanform.VERSION)
         self.assertIsNotNone(root.find("content_rating"))
+
+    def test_metainfo_screenshots_exist(self):
+        root = ET.parse(os.path.join(self.DATA, f"{scanform.APP_ID}.metainfo.xml")).getroot()
+        images = [img.text for img in root.iter("image")]
+        self.assertEqual(len(images), 3)
+        for url in images:
+            name = url.rsplit("/", 1)[1]
+            path = os.path.join(ROOT, "docs", "screenshots", name)
+            with self.subTest(name=name), open(path, "rb") as f:
+                self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
 
     def test_icon(self):
         root = ET.parse(os.path.join(self.DATA, f"{scanform.APP_ID}.svg")).getroot()
