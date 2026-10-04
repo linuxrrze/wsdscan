@@ -860,10 +860,13 @@ class ScannerPage(Adw.NavigationPage):
         self.name_row.connect("changed", self._name_changed)
         self.host_row = Adw.EntryRow(use_markup=False, title=_("IP address or host name"),
                                      text=values["host"])
-        self.model_row = Adw.EntryRow(use_markup=False, title=_("Only scanners whose name contains"),
-                                      text=values["model"])
+        # The model filter only matters for automatic discovery (no address).
+        self.model_row = Adw.EntryRow(use_markup=False,
+                                      title=_("Without address: only scanners whose name contains"),
+                                      text=values["model"] if not values["host"] else "")
         for entry in (self.host_row, self.model_row):
             entry.connect("changed", lambda *_a: self._schedule_lookup())
+        self.host_row.connect("changed", lambda *_a: self._sync_model_row())
         self.device_row = Adw.ActionRow(use_markup=False, title=_("Device"), css_classes=["property"])
         is_default = name == prefs.default_name or not prefs.profiles
         self.default_row = Adw.SwitchRow(use_markup=False, title=_("Use by default"), active=is_default)
@@ -871,9 +874,11 @@ class ScannerPage(Adw.NavigationPage):
             # There is always one default: choose another scanner to change it.
             self.default_row.set_sensitive(False)
             self.default_row.set_subtitle(_("To change, make another scanner the default"))
-        for widget in (self.name_row, self.host_row, self.model_row, self.device_row,
+        # Address first: the name is proposed from the scanner found there.
+        for widget in (self.host_row, self.model_row, self.name_row, self.device_row,
                        self.default_row):
             ident.add(widget)
+        self._sync_model_row()
 
         connected = name is not None and name == app.config["scanner"] and window.device
         self.settings = ScanSettings(values, window.choices if connected else
@@ -941,11 +946,20 @@ class ScannerPage(Adw.NavigationPage):
         self.name_row.set_text(text)
         self._setting_name = False
 
+    def _sync_model_row(self):
+        self.model_row.set_visible(not self.host_row.get_text().strip())
+
+    def _model_filter(self):
+        """The model filter, if it applies (only without an address)."""
+        if self.host_row.get_text().strip():
+            return ""
+        return self.model_row.get_text().strip()
+
     def _schedule_lookup(self):
         if self._lookup_source:
             GLib.source_remove(self._lookup_source)
             self._lookup_source = 0
-        host, model = self.host_row.get_text().strip(), self.model_row.get_text().strip()
+        host, model = self.host_row.get_text().strip(), self._model_filter()
         if not host and not model:
             self.device_row.set_subtitle(_("No address: found automatically on the network "
                                            "when scanning"))
@@ -988,7 +1002,7 @@ class ScannerPage(Adw.NavigationPage):
     def values(self):
         values = dict(self.settings.values(), **self.ocr_rows.values(),
                       host=self.host_row.get_text().strip(),
-                      model=self.model_row.get_text().strip(),
+                      model=self._model_filter(),
                       outdir=self.folder.folder, filename=self.filename.get_text().strip()
                       or wsdscan.CONFIG_DEFAULTS["filename"])
         if self.follow_documents and values["outdir"] == scanform.documents_dir():

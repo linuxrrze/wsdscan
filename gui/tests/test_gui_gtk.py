@@ -197,6 +197,32 @@ class GtkTest(unittest.TestCase):
             self.assertEqual(app.scanners["EPSON ES-580W"]["host"], fake.host)
             window.close()
 
+    def test_scanner_page_address_first_and_model_filter(self):
+        wsdscan.save_config({"scanner": "A"}, scanners={
+            "A": {"host": "192.0.2.1", "model": "ES-580W"}, "B": {"model": "ADS"}})
+        app = wsdscan_gui.ScanApp()
+        app.register(None)
+        app.activate()
+        window = app.window
+        assert window is not None
+        prefs = wsdscan_gui.PreferencesDialog(window)
+        page = wsdscan_gui.ScannerPage(prefs, "A")
+        group = page.host_row.get_parent()
+        assert group is not None
+        self.assertIs(group.get_first_child(), page.host_row, "address is the first row")
+        # With an address the name filter is pointless: hidden and not saved.
+        self.assertFalse(page.model_row.get_visible())
+        self.assertEqual(page.values()["model"], "")
+        page.host_row.set_text("")
+        self.assertTrue(page.model_row.get_visible())
+        page.model_row.set_text("ES-580W")
+        self.assertEqual(page.values()["model"], "ES-580W")
+        # Without address (found automatically) the filter is shown.
+        page_b = wsdscan_gui.ScannerPage(prefs, "B")
+        self.assertTrue(page_b.model_row.get_visible())
+        self.assertEqual(page_b.model_row.get_text(), "ADS")
+        window.close()
+
     def test_typed_name_is_kept(self):
         with FakeScanner(model="ES-580W") as fake:
             wsdscan.save_config({"scanner": ""}, scanners={})

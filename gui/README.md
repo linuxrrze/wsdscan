@@ -121,9 +121,9 @@ Every scanner has **its own settings**. Different scanners can be set up differe
 
 **A scanner's page** has:
 - **Scanner:**
-  - **Name:** editable. While you haven't typed one, the device's name ("EPSON ES-580W") is proposed as soon as the scanner answers.
-  - **IP address or host name:** empty = find it automatically on the network.
-  - **Model filter.**
+  - **IP address or host name** (first): empty = find it automatically on the network.
+  - **Model filter**, only without an address: for automatic discovery, use only scanners whose name contains this text. With an address it isn't shown and isn't saved.
+  - **Name:** editable. While you haven't typed one, the name of the scanner found at the address ("EPSON ES-580W") is proposed.
   - **Device:** what was found at that address.
   - **Use by default.**
 - **Scan settings:** sides, color, resolution, paper size, lossless, brightness/contrast, text recognition on/off, review pages. Once the device has answered, only what it supports is offered.
