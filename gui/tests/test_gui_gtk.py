@@ -82,6 +82,25 @@ class GtkTest(unittest.TestCase):
         self.assertTrue(settings.scan_values()["ocr"])
         self.assertEqual(settings.ocr.get_subtitle(), "Tesseract · eng")
 
+    def test_open_file_only_for_saved_files(self):
+        from unittest import mock
+        app = wsdscan_gui.ScanApp()
+        with mock.patch.object(wsdscan_gui.Gtk, "FileLauncher") as launcher:
+            app.open_file("/etc/passwd")  # e.g. via D-Bus from another program
+            launcher.assert_not_called()
+            app.saved_files.add("/home/x/Scan.pdf")
+            app.open_file("/home/x/Scan.pdf")
+            launcher.assert_called_once()
+
+    def test_thumbnail_of_crafted_image(self):
+        from fake_wsd import JPEG_RGB
+        self.assertIsNotNone(wsdscan_gui.make_thumbnail(JPEG_RGB))
+        bad = bytearray(JPEG_RGB)
+        sof = bad.index(b"\xff\xc0")
+        bad[sof + 5:sof + 9] = (40000).to_bytes(2, "big") * 2  # claims 40000 x 40000
+        self.assertIsNone(wsdscan_gui.make_thumbnail(bytes(bad)))
+        self.assertIsNone(wsdscan_gui.make_thumbnail(b"not an image"))
+
     def test_ocr_switch_disabled_without_engines(self):
         Adw.init()
         settings = wsdscan_gui.ScanSettings(dict(wsdscan.CONFIG_DEFAULTS, ocr=True),

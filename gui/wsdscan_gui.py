@@ -11,8 +11,12 @@ import sys
 import threading
 
 HERE = os.path.dirname(os.path.realpath(__file__))
-# Installed: wsdscan.py sits next to this file; source tree: one level up.
-sys.path[:0] = [HERE, os.path.dirname(HERE)]
+# Installed: wsdscan.py sits next to this file (also as a link in the source
+# tree). The parent folder is only searched if needed, and last, so nothing
+# else there (e.g. in ~/.local/share) can shadow a module.
+sys.path.insert(0, HERE)
+if not os.path.exists(os.path.join(HERE, "wsdscan.py")):
+    sys.path.append(os.path.dirname(HERE))
 
 # On KDE Plasma, use the desktop's own (KDE) file dialogs through the portal.
 if "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "").upper().split(":"):
@@ -37,6 +41,7 @@ from scanform import _  # noqa: E402
 
 MIN_ADW = (1, 5)
 THUMB_HEIGHT = 150  # page preview height in pixels
+MAX_THUMBNAIL_SOURCE_PIXELS = 100_000_000  # 600 dpi A3 is ~70 megapixels
 
 
 def in_main_thread(func, *args):
@@ -237,6 +242,12 @@ def make_thumbnail(data):
     Uses GTK's own JPEG/TIFF decoder: gdk-pixbuf's loaders are optional and
     may be missing (newer versions delegate to the glycin loaders).
     """
+    try:
+        width, height = wsdscan.image_size(data)
+    except wsdscan.ScanError:
+        return None
+    if width * height > MAX_THUMBNAIL_SOURCE_PIXELS:
+        return None  # a crafted header must not make GTK allocate gigabytes
     try:
         texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
     except GLib.Error:
@@ -682,6 +693,7 @@ class MainWindow(Adw.ApplicationWindow):
                 pages=pages, name=name)
         toast = Adw.Toast(use_markup=False, title=message, button_label=_("Open"), action_name="app.open-file",
                           action_target=GLib.Variant("s", out), timeout=8)
+        self.app.saved_files.add(out)
         self.toasts.add_toast(toast)
         self.last_toast = toast
         self.new_file_name()
@@ -1083,8 +1095,11 @@ class PreferencesDialog(Adw.PreferencesDialog):
 
         cli = Adw.PreferencesGroup(
             description=_("The scanners and their settings are shared with the wsdscan "
-                          "command (--scanner NAME). File: {path}").format(
-                              path=wsdscan.config_path()))
+                          "command (--scanner NAME)."))
+        # The path goes into a row: rows show plain text, group descriptions may not.
+        cli.add(Adw.ActionRow(use_markup=False, title=_("Settings file"),
+                              subtitle=scanform.display_path(wsdscan.config_path()),
+                              css_classes=["property"]))
 
         for group in (self.scanners_group, self.found, behavior, background, cli):
             page.add(group)
@@ -1179,7 +1194,10 @@ class PreferencesDialog(Adw.PreferencesDialog):
 
         def failed(error):
             button.set_sensitive(True)
-            self.found.set_description(str(error))
+            self.found.set_description(None)
+            row = Adw.ActionRow(use_markup=False, title=_("No scanner found"), subtitle=str(error))
+            self.found.add(row)
+            self.found_rows.append(row)
 
         run_in_thread(lambda: wsdscan.discover(None), done, failed)
 
@@ -1228,6 +1246,7 @@ class ScanApp(Adw.Application):
         self.window = None
         self.ocr = scanform.OcrStatus([], [])
         self.tray = None
+        self.saved_files = set()  # "open-file" may only open these
         self.config_error = None
         self.busy = False
 
@@ -1409,6 +1428,10 @@ class ScanApp(Adw.Application):
         about.present(self.window)
 
     def open_file(self, path):
+        # The action is reachable over D-Bus by other programs: only open what
+        # this app has saved itself.
+        if path not in self.saved_files:
+            return
         launcher = Gtk.FileLauncher(file=Gio.File.new_for_path(path))
         launcher.launch(self.window, None, None)
 

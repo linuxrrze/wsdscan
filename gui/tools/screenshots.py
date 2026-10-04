@@ -9,8 +9,8 @@ the window. Run from the repository root with GTK 4 / libadwaita available:
 
 Uses its own temporary config file and home folder; your settings are not
 touched. For realistic pictures the fake scanner (listening on 127.0.0.1)
-is shown under the LAN address 192.168.2.13; only addresses are mapped, the
-app and the protocol are real.
+is shown under the LAN address 192.168.2.13: only the displayed address is
+replaced; the app, the protocol and its checks are real.
 """
 
 import os
@@ -183,13 +183,16 @@ def main():
                                 colors=["RGB24", "Grayscale8", "BlackAndWhite1"],
                                 resolutions=[100, 300], sheets=2)
     fake.start()
-    # Show the fake under a LAN address: probe it there, display that address.
-    real_probe, real_urlsplit = wsdscan.probe, wsdscan.urlsplit
+    # Show the fake under a LAN address: probe the fake when that address is
+    # configured, and show the address in place of 127.0.0.1 - only in the
+    # displayed texts, so the app's address checks still run unchanged.
+    real_probe = wsdscan.probe
     wsdscan.probe = lambda host, *a, **k: real_probe(
         fake.host if host == SHOWN_HOST else host, *a, **k)
-    local = f"127.0.0.1:{fake.http_port}"
-    wsdscan.urlsplit = lambda url, *a, **k: real_urlsplit(url.replace(local, SHOWN_HOST), *a, **k)
-    scanform.wsdscan.urlsplit = wsdscan.urlsplit
+    real_describe, real_label = scanform.describe_scanner, scanform.device_label
+    scanform.describe_scanner = lambda *a, **k: tuple(
+        text.replace("127.0.0.1", SHOWN_HOST) for text in real_describe(*a, **k))
+    scanform.device_label = lambda *a, **k: real_label(*a, **k).replace("127.0.0.1", SHOWN_HOST)
     out = os.path.join(os.environ["HOME"], "Documents", "Scans")
     profile = dict(scanform.full_profile(wsdscan.CONFIG_DEFAULTS, {"host": SHOWN_HOST}),
                    lossless=True, ocr=True, outdir=out, filename="Invoice {date}")

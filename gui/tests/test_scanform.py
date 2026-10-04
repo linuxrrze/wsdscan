@@ -327,7 +327,15 @@ class AutostartTest(unittest.TestCase):
         self.assertEqual(scanform.desktop_exec(["/usr/bin/wsdscan-gui", "--background"]),
                          "/usr/bin/wsdscan-gui --background")
         self.assertEqual(scanform.desktop_exec(["/usr/bin/python3", "/home/a b/x$y.py"]),
-                         '/usr/bin/python3 "/home/a b/x\\$y.py"')
+                         '/usr/bin/python3 "/home/a b/x\\\\$y.py"')  # \\$ in the key file
+
+    def test_desktop_exec_spec_details(self):
+        self.assertEqual(scanform.desktop_exec(["/opt/100%/w"]), "/opt/100%%/w")
+        # Inside quotes \\ for a backslash, then doubled again for the key file.
+        self.assertEqual(scanform.desktop_exec(["/x\\y z"]), '"/x\\\\\\\\y z"')
+        for bad in ("/a\nExec=evil", "/a\rb", "/a\x00b", "/a\u202eb"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                scanform.desktop_exec([bad])
 
     def test_entry_and_switching(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": d}):

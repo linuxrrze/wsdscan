@@ -16,6 +16,8 @@ MODE=install
 SKIP_CHECK=no
 
 die() { echo "error: $*" >&2; exit 1; }
+# Quote a value for a POSIX shell script: 'value', with ' written as '\''.
+shell_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 while [ $# -gt 0 ]; do
 	case $1 in
@@ -41,9 +43,11 @@ refresh_caches() {
 	for tool in gtk4-update-icon-cache gtk-update-icon-cache; do
 		if command -v $tool >/dev/null 2>&1; then $tool -q -t -f "$ICONS" 2>/dev/null || true; break; fi
 	done
-	for tool in kbuildsycoca6 kbuildsycoca5; do  # KDE menu cache
-		if command -v $tool >/dev/null 2>&1; then $tool >/dev/null 2>&1 || true; break; fi
-	done
+	if [ "$(id -u)" != 0 ]; then  # KDE's menu cache is per user; not as root
+		for tool in kbuildsycoca6 kbuildsycoca5; do
+			if command -v $tool >/dev/null 2>&1; then $tool >/dev/null 2>&1 || true; break; fi
+		done
+	fi
 }
 
 # wsdscan.py: next to this script (link or copy), else in the repository root.
@@ -130,11 +134,18 @@ fi
 mkdir -p "$LIB" "$BIN" "$APPS" "$ICONS/scalable/apps" "$ICONS/symbolic/apps" "$META"
 cp -L "$SRC_CLI" "$HERE/wsdscan_gui.py" "$HERE/scanform.py" "$HERE/tray.py" "$LIB/"
 PYTHON=$(command -v python3)
-printf '#!/bin/sh\nexec %s %s/wsdscan_gui.py "$@"\n' "$PYTHON" "$LIB" > "$BIN/wsdscan-gui"
-printf '#!/bin/sh\nexec %s %s/wsdscan.py "$@"\n' "$PYTHON" "$LIB" > "$BIN/wsdscan"
+printf '#!/bin/sh\nexec %s %s "$@"\n' "$(shell_quote "$PYTHON")" \
+	"$(shell_quote "$LIB/wsdscan_gui.py")" > "$BIN/wsdscan-gui"
+printf '#!/bin/sh\nexec %s %s "$@"\n' "$(shell_quote "$PYTHON")" \
+	"$(shell_quote "$LIB/wsdscan.py")" > "$BIN/wsdscan"
 chmod 755 "$BIN/wsdscan-gui" "$BIN/wsdscan"
-# Absolute Exec path: ~/.local/bin is not always on the desktop session's PATH.
-sed "s|^Exec=.*|Exec=$BIN/wsdscan-gui|" "$HERE/data/$APP_ID.desktop" > "$APPS/$APP_ID.desktop"
+# Absolute Exec path (~/.local/bin is not always on the desktop session's PATH),
+# quoted per the Desktop Entry spec by the app's own, tested function.
+EXEC_LINE=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import scanform
+print(scanform.desktop_exec([sys.argv[2]]))' "$LIB" "$BIN/wsdscan-gui") \
+	|| die "cannot use the install path $BIN in a desktop file"
+EXEC_LINE=$EXEC_LINE awk '/^Exec=/ { print "Exec=" ENVIRON["EXEC_LINE"]; next } { print }' \
+	"$HERE/data/$APP_ID.desktop" > "$APPS/$APP_ID.desktop"
 cp "$HERE/data/$APP_ID.svg" "$ICONS/scalable/apps/"
 cp "$HERE/data/$APP_ID-symbolic.svg" "$ICONS/symbolic/apps/"
 cp "$HERE/data/$APP_ID.metainfo.xml" "$META/"

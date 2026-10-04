@@ -213,10 +213,30 @@ It covers:
 - scanner discovery and `--model`
 - progress reporting, cancelling, page selection
 - text recognition: engine and language choice, failures, the per-page progress
+- security (`test_security.py`): pinned discovery, URL schemes, redirects, proxy, size, page and image limits, crafted TIFF/JPEG headers, device texts with control characters, safe file writing, invalid command-line values
 
 The tests never read your real config file. The desktop app's tests are in `gui/tests`.
 
 `ES580W_PROFILE` in the test file models the real device: `/WDP/SCAN` service path, only `exif`/`tiff` formats. When the real scanner surprises you, record the new behavior there or as a fake option and add a test.
+
+## Security
+
+WSD has no authentication: any device on your network can answer discovery and claim to be a scanner, and the data travels unencrypted (plain HTTP), just like with the vendors' own software. Use it on networks you trust. The tool limits what a malicious or broken device can do:
+
+- **Pinned addresses:** device URLs are only accepted if they point to the host that answered. With `--host`, only answers from that host count, and the first answer per device wins. A configured address can't be redirected to another machine by a second device.
+- **Only HTTP and HTTPS:** no `file:`, `data:` or other URLs, no redirects. HTTP proxy settings (`http_proxy`) are ignored, so scans don't leave your network through a proxy.
+- **Limits:**
+  - 300 MB per response, with a deadline per request
+  - 1000 pages and 2 GB per scan job
+  - plausible image sizes only
+  - only the image format that was requested
+  - XML with a DTD is refused
+- **Crafted images:** TIFF and JPEG headers are checked against the actual data before anything is allocated.
+- **Clean output:** control characters, escape sequences and bidi overrides in device texts (model names, error messages) are replaced before they're shown.
+- **Safe file writing:** a new PDF is written to a temporary file next to the target and then linked into place. An existing file, or a symlink planted in a shared folder, is never written through. With `--force`, the target itself is replaced, never the file a symlink points to.
+- **OCR:** the OCR tools get absolute file paths and validated language codes, without a shell.
+
+The desktop app shows device texts as plain text, never as markup. Its "open-file" action is reachable over D-Bus, so it only opens PDFs the app saved itself. `tests/test_security.py` covers these cases.
 
 ## Protocol
 

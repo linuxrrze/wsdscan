@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import unicodedata
 from types import SimpleNamespace
 
 import wsdscan
@@ -18,7 +19,7 @@ _ = gettext.translation("wsdscan", fallback=True).gettext
 
 APP_ID = "io.github.wsdscan.ScanToPdf"
 APP_NAME = "Scan to PDF"
-VERSION = "1.3.1"
+VERSION = "1.3.2"
 
 # (value, label) pairs in display order.
 SOURCES = [("duplex", _("Both sides")), ("adf", _("One side"))]
@@ -389,11 +390,20 @@ def launch_command():
 
 
 def desktop_exec(args):
-    """Quote a command line for an Exec= key (Desktop Entry Specification)."""
+    """A command line as an Exec= value (Desktop Entry Specification).
+
+    Arguments with special characters are quoted, with ", `, $ and \\
+    escaped inside the quotes; % is doubled (field codes); then backslashes
+    are escaped once more for the key-file string. Control characters are
+    rejected: a line break would add keys to the file.
+    """
     def quote(arg):
-        if not any(c in arg for c in ' \t\n"\'\\><~|&;$*?#()`'):
-            return arg
-        return '"' + "".join("\\" + c if c in '"`$\\' else c for c in arg) + '"'
+        if any(unicodedata.category(c)[0] == "C" for c in arg):
+            raise ValueError(f"control character in {arg!r}")
+        arg = arg.replace("%", "%%")
+        if any(c in arg for c in ' \t\n"\'\\><~|&;$*?#()`='):
+            arg = '"' + "".join("\\" + c if c in '"`$\\' else c for c in arg) + '"'
+        return arg.replace("\\", "\\\\")
     return " ".join(quote(a) for a in args)
 
 

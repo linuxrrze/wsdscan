@@ -22,7 +22,9 @@ import configparser
 import datetime
 import getpass
 import os
+import http.client
 import re
+import secrets
 import shutil
 import socket
 import struct
@@ -30,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 import uuid
@@ -81,6 +84,14 @@ RETRY_DELAY = 1.0
 TIMEOUT = 10
 SCAN_TIMEOUT = 120  # RetrieveImage blocks while the page is being scanned
 
+# Limits against a malicious or broken device on the network.
+MAX_RESPONSE_BYTES = 300 * 2 ** 20  # one page; 600 dpi legal color is ~130 MB uncompressed
+MAX_IMAGE_BYTES = MAX_RESPONSE_BYTES  # decoded pixels of one page
+MAX_IMAGE_SIDE = 60000  # pixels
+MAX_PAGES = 1000  # per scan job
+MAX_SCAN_BYTES = 2 * 2 ** 30  # all pages of one scan job
+DEADLINE_FACTOR = 3  # a whole response may take this many times the read timeout
+
 verbose = False
 
 
@@ -113,13 +124,32 @@ def q(tag):
     return f"{{{NS[prefix]}}}{name}"
 
 
+def clean(text):
+    """Text from the device or network without control characters.
+
+    Terminal escape sequences, C1 controls, bidi overrides and line breaks in
+    model names, fault texts etc. could fake or garble the output.
+    """
+    return "".join("?" if unicodedata.category(c)[0] == "C" or unicodedata.category(c) in ("Zl", "Zp")
+                   else c for c in str(text))
+
+
 def find_text(root, tag, default=None):
     el = root.find(f".//{q(tag)}")
-    return el.text.strip() if el is not None and el.text else default
+    return clean(el.text.strip()) if el is not None and el.text else default
 
 
 def find_all_text(root, tag):
-    return [el.text.strip() for el in root.iter(q(tag)) if el.text]
+    return [clean(el.text.strip()) for el in root.iter(q(tag)) if el.text]
+
+
+def parse_int(text, low, high):
+    """int(text) if it is plain ASCII digits within low..high, else None."""
+    if isinstance(text, str) and re.fullmatch(r"[0-9]{1,9}", text):
+        value = int(text)
+        if low <= value <= high:
+            return value
+    return None
 
 
 def envelope(to, action, body):
@@ -143,37 +173,101 @@ def parse_fault(root):
     if fault is None:
         return None
     # The most specific (innermost) Subcode carries the WS-Scan error name.
-    values = [v.text.strip() for v in fault.iter(q("soap:Value")) if v.text]
+    values = [clean(v.text.strip()) for v in fault.iter(q("soap:Value")) if v.text]
     code = values[-1].split(":")[-1] if values else "UnknownFault"
     return SoapFault(code, find_text(fault, "soap:Text", ""))
 
 
 # --- HTTP / SOAP ------------------------------------------------------------
 
+def _make_opener():
+    """HTTP(S) only: no file:/data:/ftp: URLs, no redirects, no proxy.
+
+    URLs come from the device, so a malicious device must not be able to send
+    the client elsewhere (or make it read local files), and scans should not
+    leave the local network through a proxy.
+    """
+    opener = urllib.request.OpenerDirector()
+    for handler in (urllib.request.ProxyHandler({}), urllib.request.HTTPHandler(),
+                    urllib.request.HTTPSHandler(), urllib.request.HTTPDefaultErrorHandler(),
+                    urllib.request.HTTPErrorProcessor()):
+        opener.add_handler(handler)  # no redirect handler: 3xx becomes an HTTPError
+    return opener
+
+
+OPENER = _make_opener()
+
+
+def url_parts(url):
+    """urlsplit() that returns None for malformed URLs instead of raising."""
+    try:
+        parts = urlsplit(url)
+        parts.port  # raises ValueError for a bad port
+        return parts
+    except ValueError:
+        return None
+
+
+def is_http_url(url):
+    parts = url_parts(url)
+    return bool(parts and parts.scheme in ("http", "https") and parts.hostname)
+
+
+def check_url(url):
+    if not is_http_url(url):
+        die(f"refusing scanner URL {clean(url)!r}: only http and https are allowed")
+
+
+def read_limited(resp, deadline):
+    """Read a response body, refusing endless or oversized responses."""
+    chunks, total = [], 0
+    while True:
+        if time.monotonic() > deadline:
+            die("the scanner's response took too long")
+        chunk = resp.read(2 ** 20)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > MAX_RESPONSE_BYTES:
+            die(f"the scanner's response is larger than {MAX_RESPONSE_BYTES // 2 ** 20} MB")
+        chunks.append(chunk)
+
+
+def parse_xml(data):
+    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+        die("refusing an XML response with a DTD")  # SOAP never uses one
+    try:
+        return ET.fromstring(data)
+    except ET.ParseError as e:
+        die(f"invalid XML from the scanner: {e}")
+
+
 def soap_call(url, to, action, body="", timeout=TIMEOUT):
     """POST a SOAP request. Returns (xml_root, attachment_bytes_or_None)."""
-    log(f"> {action.rsplit('/', 1)[-1]} -> {url}")
-    req = urllib.request.Request(
-        url, data=envelope(to, action, body),
-        headers={"Content-Type": "application/soap+xml; charset=utf-8"})
+    check_url(url)
+    log(f"> {action.rsplit('/', 1)[-1]} -> {clean(url)}")
+    deadline = time.monotonic() + timeout * DEADLINE_FACTOR
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            ctype, data = resp.headers.get("Content-Type", ""), resp.read()
+        req = urllib.request.Request(
+            url, data=envelope(to, action, body),
+            headers={"Content-Type": "application/soap+xml; charset=utf-8"})
+        with OPENER.open(req, timeout=timeout) as resp:
+            ctype, data = resp.headers.get("Content-Type", ""), read_limited(resp, deadline)
     except urllib.error.HTTPError as e:
         with e:
-            ctype, data = e.headers.get("Content-Type", ""), e.read()
+            data = read_limited(e, deadline)
         try:
-            fault = parse_fault(ET.fromstring(data))
-        except ET.ParseError:
+            fault = parse_fault(parse_xml(data))
+        except ScanError:
             fault = None
-        raise fault or SoapFault(f"HTTP{e.code}", e.reason)
-    except (urllib.error.URLError, OSError) as e:
-        die(f"cannot reach scanner at {url}: {e}")
+        raise fault or SoapFault(f"HTTP{e.code}", clean(e.reason))
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as e:
+        die(f"cannot reach scanner at {clean(url)}: {clean(e)}")
 
     attachment = None
     if ctype.lower().startswith("multipart/"):
         data, attachment = split_multipart(ctype, data)
-    root = ET.fromstring(data)
+    root = parse_xml(data)
     fault = parse_fault(root)
     if fault:
         raise fault
@@ -205,11 +299,47 @@ def split_multipart(ctype, data):
 
 # --- Discovery and capabilities ----------------------------------------------
 
+def parse_host(host):
+    """'scanner', '192.168.2.13' or 'name:3702' -> (name, port)."""
+    name, sep, port = host.rpartition(":")
+    if not sep or not name:
+        name, port = host, ""
+    port_number = parse_int(port, 1, 65535) if port else WSD_PORT
+    if not name or port_number is None or any(c in name for c in " /[]"):
+        die(f"invalid scanner address {clean(host)!r} (expected a host name or IPv4 address)")
+    return name, port_number
+
+
+def resolve(name):
+    """IPv4 addresses of a host name (empty set if it cannot be resolved)."""
+    try:
+        return {info[4][0] for info in socket.getaddrinfo(name, None, socket.AF_INET)}
+    except (OSError, UnicodeError):
+        return set()
+
+
+def host_matches(url, addresses):
+    """True if the URL's host is one of `addresses` or resolves to one of them."""
+    parts = url_parts(url)
+    host = parts.hostname if parts else None
+    return bool(host) and (host in addresses or bool(resolve(host) & addresses))
+
+
 def probe(host, timeout=3.0):
-    """WS-Discovery Probe. Returns [(endpoint_uuid, [device_urls])] for scanners."""
+    """WS-Discovery Probe. Returns [(endpoint_uuid, [device_urls])] for scanners.
+
+    Device URLs are only accepted if they point to the host that answered
+    (with --host: only answers from that host count), and the first answer
+    per device wins. This keeps another machine on the network from
+    redirecting the client by answering for, or on behalf of, a scanner.
+    """
+    allowed = None
     if host:
-        name, _, port = host.partition(":")
-        target = (name, int(port or WSD_PORT))
+        name, port = parse_host(host)
+        allowed = resolve(name)
+        if not allowed:
+            die(f"cannot resolve scanner address {clean(name)!r}")
+        target = (name, port)
     else:
         target = (WSD_MULTICAST, WSD_PORT)
     msg = envelope("urn:schemas-xmlsoap-org:ws:2005:04:discovery", ACTION_PROBE,
@@ -220,14 +350,22 @@ def probe(host, timeout=3.0):
     log(f"> Probe -> {target[0]}:{target[1]}")
     found = {}
     try:
-        sock.sendto(msg, target)
+        try:
+            sock.sendto(msg, target)
+        except OSError as e:
+            die(f"cannot send the discovery request to {clean(target[0])}: {clean(e)}")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             sock.settimeout(max(0.1, deadline - time.monotonic()))
             try:
-                data, _ = sock.recvfrom(65535)
+                data, (source, _port) = sock.recvfrom(65535)
             except socket.timeout:
                 break
+            if allowed is not None and source not in allowed:
+                log(f"  ignoring an answer from {source}")
+                continue
+            if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+                continue
             try:
                 root = ET.fromstring(data)
             except ET.ParseError:
@@ -236,9 +374,12 @@ def probe(host, timeout=3.0):
                 if "ScanDeviceType" not in (find_text(match, "wsd:Types") or ""):
                     continue
                 addr = find_text(match, "wsa:Address")
-                xaddrs = (find_text(match, "wsd:XAddrs") or "").split()
-                if addr and xaddrs:
+                xaddrs = [url for url in (find_text(match, "wsd:XAddrs") or "").split()
+                          if is_http_url(url) and host_matches(url, {source})]
+                if addr and xaddrs and addr not in found:  # first answer wins
                     found[addr] = xaddrs
+                elif addr and not xaddrs:
+                    log(f"  ignoring {source}: its device address points elsewhere")
             if host and found:
                 break
     finally:
@@ -251,8 +392,8 @@ def get_device(endpoint, xaddrs):
     for url in xaddrs:
         try:
             root, _ = soap_call(url, endpoint, ACTION_GET)
-        except SoapFault as e:
-            log(f"  metadata from {url} failed: {e}")
+        except (SoapFault, ScanError) as e:  # one broken device must not stop discovery
+            log(f"  metadata from {clean(url)} failed: {e}")
             continue
         device = {
             "manufacturer": find_text(root, "wsdp:Manufacturer", "?"),
@@ -262,9 +403,15 @@ def get_device(endpoint, xaddrs):
             "device_url": url,
             "service": None,
         }
+        device_host = urlsplit(url).hostname
+        same_host = {device_host} | resolve(device_host)
         for hosted in root.iter(q("wsdp:Hosted")):
             if "ScannerServiceType" in (find_text(hosted, "wsdp:Types") or ""):
-                device["service"] = find_text(hosted, "wsa:Address")
+                service = find_text(hosted, "wsa:Address") or ""
+                if is_http_url(service) and host_matches(service, same_host):
+                    device["service"] = service
+                else:
+                    log(f"  ignoring a scan service on another host: {service}")
                 break
         return device
     return None
@@ -670,11 +817,12 @@ def scan(service, args, caps, on_page=None, should_stop=None):
         die("scanner did not return a job id")
     final_res = root.find(f".//{q('wscn:DocumentFinalParameters')}//{q('wscn:Resolution')}")
     dpi = args.resolution
-    if final_res is not None and (find_text(final_res, "wscn:Width") or "").isdigit():
-        dpi = int(find_text(final_res, "wscn:Width"))
+    if final_res is not None:
+        dpi = parse_int(find_text(final_res, "wscn:Width"), 50, 2400) or dpi
     log(f"  job {job_id} created ({dpi} dpi)")
+    expected = "tiff" if pick_format(caps, args.mode, args.lossless) == TIFF_FORMAT else "jpeg"
 
-    pages, complete = [], True
+    pages, complete, total = [], True, 0
     try:
         while True:
             if should_stop and should_stop():
@@ -692,17 +840,24 @@ def scan(service, args, caps, on_page=None, should_stop=None):
                     break  # feeder empty, job done
                 if not pages:
                     raise
-                print(f"warning: scan stopped after {len(pages)} page(s): {e}",
+                print(f"warning: scan stopped after {len(pages)} page(s): {clean(e)}",
                       file=sys.stderr)
                 complete = False
                 break
-            if not image or image_kind(image) is None:
-                die("scanner returned no JPEG or TIFF image")
+            if not image or image_kind(image) != expected:
+                die(f"scanner returned no {expected.upper()} image")
             pages.append(image)
+            total += len(image)
             if on_page:
                 on_page(len(pages), image)
             else:
                 print(f"  page {len(pages)}", file=sys.stderr)
+            if len(pages) >= MAX_PAGES or total > MAX_SCAN_BYTES:
+                print(f"warning: stopping after {len(pages)} page(s): more than one scan "
+                      "job should hold", file=sys.stderr)
+                complete = False
+                cancel(service, job_id)
+                break
     except BaseException:
         cancel(service, job_id)
         raise
@@ -712,7 +867,7 @@ def scan(service, args, caps, on_page=None, should_stop=None):
 
 
 def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
-                 on_page_image=None, select_pages=None):
+                 on_page_image=None, select_pages=None, overwrite=False):
     """Find the scanner (unless given), check the settings, scan, write the PDF,
     and run text recognition if args.ocr is set.
 
@@ -760,7 +915,7 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
             raise ScanCancelled("all pages were removed; nothing was saved")
         pages = [pages[i] for i in keep]
     report("saving", len(pages))
-    write_pdf(out, pages, dpi)
+    write_pdf(out, pages, dpi, overwrite)
     ocr_error = None
     if ocr:
         report("ocr", len(pages))
@@ -910,6 +1065,7 @@ def jpeg_info(data):
         if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
             height = int.from_bytes(data[i + 5:i + 7], "big")
             width = int.from_bytes(data[i + 7:i + 9], "big")
+            check_image_size(width, height)
             return width, height, data[i + 9]
         i += 2 + length
     die("could not read JPEG dimensions")
@@ -927,13 +1083,16 @@ def image_kind(data):
     return None
 
 
-def tiff_image(data):
-    """Decode an uncompressed TIFF into raw pixel rows for the PDF.
+def check_image_size(width, height):
+    if not (0 < width <= MAX_IMAGE_SIDE and 0 < height <= MAX_IMAGE_SIDE):
+        die(f"image size {width} x {height} is not plausible")
 
-    Supports what scanners send as tiff-single-uncompressed: 1-bit black &
-    white, 8-bit gray and 24-bit RGB, in one or more strips.
-    """
-    order = {b"II": "<", b"MM": ">"}[data[:2]]
+
+def tiff_tags(data):
+    """(byte order, {tag: [values]}) of the first TIFF directory, bounds-checked."""
+    order = {b"II": "<", b"MM": ">"}.get(data[:2])
+    if order is None:
+        die("could not read TIFF image")
     try:
         (ifd,) = struct.unpack(order + "I", data[4:8])
         (count,) = struct.unpack(order + "H", data[ifd:ifd + 2])
@@ -944,16 +1103,46 @@ def tiff_image(data):
             if typ not in TIFF_TYPES:
                 continue  # rationals, strings: not needed
             size = struct.calcsize(TIFF_TYPES[typ]) * n
+            if size > len(data):
+                die("TIFF image data is out of range")
             if size <= 4:
                 raw = entry[8:8 + size]
             else:
                 (offset,) = struct.unpack(order + "I", entry[8:12])
                 raw = data[offset:offset + size]
-            tags[tag] = list(struct.unpack(order + TIFF_TYPES[typ] * n, raw))
+            tags[tag] = list(struct.unpack(f"{order}{n}{TIFF_TYPES[typ]}", raw))
+    except (struct.error, IndexError):
+        die("could not read TIFF image")
+    return order, tags
+
+
+def image_size(data):
+    """(width, height) of a scanned JPEG or TIFF page, read from its header."""
+    if image_kind(data) == "jpeg":
+        width, height, _components = jpeg_info(data)
+        return width, height
+    _order, tags = tiff_tags(data)
+    try:
+        width, height = tags[256][0], tags[257][0]
+    except (KeyError, IndexError):
+        die("could not read TIFF image")
+    check_image_size(width, height)
+    return width, height
+
+
+def tiff_image(data):
+    """Decode an uncompressed TIFF into raw pixel rows for the PDF.
+
+    Supports what scanners send as tiff-single-uncompressed: 1-bit black &
+    white, 8-bit gray and 24-bit RGB, in one or more strips.
+    """
+    order, tags = tiff_tags(data)
+    try:
         width, height = tags[256][0], tags[257][0]
         offsets, counts = tags[273], tags[279]
-    except (KeyError, struct.error, IndexError):
+    except (KeyError, IndexError):
         die("could not read TIFF image")
+    check_image_size(width, height)
     bits = tags.get(258, [1])
     samples = tags.get(277, [1])[0]
     compression = tags.get(259, [1])[0]
@@ -967,10 +1156,22 @@ def tiff_image(data):
     if photometric not in (0, 1, 2):
         die(f"TIFF photometric interpretation {photometric} not supported")
     row = (width * samples * bits[0] + 7) // 8
-    pixels = b"".join(data[o:o + c] for o, c in zip(offsets, counts))
-    if len(pixels) < row * height:
+    needed = row * height
+    if needed > MAX_IMAGE_BYTES:
+        die("TIFF image is too large")
+    if len(offsets) != len(counts):
+        die("could not read TIFF image")
+    strips, collected = [], 0
+    for offset, count in zip(offsets, counts):
+        if offset < 0 or count < 0 or offset + count > len(data):
+            die("TIFF image data is out of range")
+        strips.append(data[offset:offset + count])
+        collected += count
+        if collected >= needed:
+            break  # strips may not repeat data to make the image larger
+    if collected < needed:
         die("TIFF image data is truncated")
-    pixels = pixels[:row * height]
+    pixels = b"".join(strips)[:needed]
     if tags.get(266, [1])[0] == 2:  # FillOrder: least significant bit first
         pixels = pixels.translate(REVERSE_BITS)
     return {
@@ -1043,9 +1244,44 @@ def pdf_bytes(images, dpi):
     return bytes(out)
 
 
-def write_pdf(path, images, dpi):
-    with open(path, "wb") as f:
-        f.write(pdf_bytes(images, dpi))
+def write_file(path, data, overwrite=False):
+    """Write `data` to `path` without ever writing through a symlink.
+
+    The data goes to a new temporary file next to `path` first. Then it is
+    moved into place (overwrite) or hard-linked, which fails if `path`
+    exists in any form, including a dangling symlink planted by someone else.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    tmp = os.path.join(directory, f".wsdscan-{secrets.token_hex(8)}.part")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                     0o666)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        if overwrite:
+            os.replace(tmp, path)
+            return
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            die(f"{path} already exists")
+        except OSError:
+            # File systems without hard links: create exclusively instead.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                         | getattr(os, "O_NOFOLLOW", 0), 0o666)
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+    except FileExistsError:
+        die(f"{path} already exists")
+    except OSError as e:
+        die(f"cannot write {path}: {e.strerror or e}")
+    finally:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+
+
+def write_pdf(path, images, dpi, overwrite=False):
+    write_file(path, pdf_bytes(images, dpi), overwrite)
 
 
 # --- Text recognition (OCR) ----------------------------------------------------
@@ -1131,6 +1367,8 @@ def resolve_ocr(engine, lang):
         die(f"OCR engine '{engine}' is not installed; available: {', '.join(available)}")
     installed = tesseract_languages()
     lang = lang or default_ocr_languages(installed)
+    if not re.fullmatch(r"[a-z_]+(\+[a-z_]+)*", lang):
+        die(f"invalid OCR languages {clean(lang)!r}: expected Tesseract codes like deu+eng")
     missing = [part for part in lang.split("+") if installed and part not in installed]
     if missing:
         die(f"OCR language(s) not installed: {', '.join(missing)}; installed: "
@@ -1168,7 +1406,8 @@ def run_ocr(engine, path, pdf_path, images, dpi, lang, on_page=None):
         result_pdf = os.path.join(tmp, "out.pdf")
         if engine == "ocrmypdf":
             # Plain PDF output keeps the scanned images untouched (no PDF/A conversion).
-            cmd = [path, "-l", lang, "--output-type", "pdf", pdf_path, result_pdf]
+            # Absolute paths: a file name starting with "-" must not look like an option.
+            cmd = [path, "-l", lang, "--output-type", "pdf", os.path.abspath(pdf_path), result_pdf]
         else:
             # Tesseract builds the PDF itself from the page images.
             listing = os.path.join(tmp, "pages.txt")
@@ -1191,10 +1430,12 @@ def run_ocr(engine, path, pdf_path, images, dpi, lang, on_page=None):
 
         code, output = run_command(cmd, on_line)
         if code != 0 or not os.path.exists(result_pdf):
-            details = [line for line in output if line.strip()][-3:]
+            details = [clean(line) for line in output if line.strip()][-3:]
             die(f"text recognition with {engine} failed (exit {code})"
                 + (": " + " / ".join(details) if details else ""))
-        shutil.copyfile(result_pdf, pdf_path)
+        with open(result_pdf, "rb") as f:
+            result = f.read()
+        write_file(pdf_path, result, overwrite=True)  # replaces our own file atomically
 
 
 # --- Configuration -----------------------------------------------------------
@@ -1420,6 +1661,13 @@ def unique_path(path):
 
 # --- CLI ---------------------------------------------------------------------
 
+def resolution_value(text):
+    value = parse_int(text, 50, 2400)
+    if value is None:
+        raise argparse.ArgumentTypeError("expected a resolution from 50 to 2400 dpi")
+    return value
+
+
 def exposure_value(text):
     if text == "default":
         return None
@@ -1487,7 +1735,7 @@ def parse_args(argv=None):
     p.add_argument("--ocr-lang", default=cfg["ocr_lang"] or None, metavar="LANGS",
                    help="Tesseract languages, e.g. deu+eng (default: system language + "
                         "English, if installed)")
-    p.add_argument("-r", "--resolution", type=int, default=cfg["resolution"],
+    p.add_argument("-r", "--resolution", type=resolution_value, default=cfg["resolution"],
                    help="dpi (default: %(default)s)")
     p.add_argument("-p", "--paper", choices=tuple(PAPER_SIZES), default=cfg["paper"],
                    help="paper size (default: %(default)s)")
@@ -1568,7 +1816,8 @@ def main(argv=None):
         elif event == "ocr":
             print("recognizing text...", file=sys.stderr)
 
-    pages, complete, ocr_error = scan_to_file(args, out, device=device, on_progress=progress)
+    pages, complete, ocr_error = scan_to_file(args, out, device=device, on_progress=progress,
+                                              overwrite=args.force)
     print(f"saved {pages} page(s) to {out}")
     if not complete:
         sys.exit(2)
@@ -1581,7 +1830,7 @@ if __name__ == "__main__":
     try:
         main()
     except ScanError as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"error: {clean(e)}", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
         sys.exit(130)

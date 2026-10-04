@@ -159,6 +159,13 @@ class FakeScanner:
             "final_dpi": None,            # report a different dpi than requested
             "exposure_range": (-1000, 1000),  # accepted brightness/contrast; None = none
             "tiff": {},                   # make_tiff options, e.g. {"order": ">"}
+            # Misbehavior, for security tests:
+            "xaddrs": None,               # device URLs announced in discovery
+            "hosted_address": None,       # scan service URL announced by Get
+            "redirect_to": None,          # answer every SOAP request with a 302 there
+            "endless": False,             # never run out of pages
+            "image": None,                # bytes returned by RetrieveImage instead
+            "doctype": False,             # put a DTD into the Get response
         }
         unknown = set(config) - set(self.config)
         if unknown:
@@ -233,7 +240,7 @@ class FakeScanner:
                 f"<wsa:EndpointReference><wsa:Address>{self.endpoint}</wsa:Address>"
                 "</wsa:EndpointReference>"
                 "<wsd:Types>wsdp:Device wscn:ScanDeviceType</wsd:Types>"
-                f"<wsd:XAddrs>{self.device_url}</wsd:XAddrs>"
+                f"<wsd:XAddrs>{self.config['xaddrs'] or self.device_url}</wsd:XAddrs>"
                 "</wsd:ProbeMatch></wsd:ProbeMatches>")
             try:
                 self.udp.sendto(reply, addr)
@@ -247,6 +254,12 @@ class FakeScanner:
         action = re.search(r"<wsa:Action>([^<]+)", req).group(1).rsplit("/", 1)[-1]
         to = re.search(r"<wsa:To>([^<]+)", req).group(1)
         self.requests.append((action, req))
+        if self.config["redirect_to"]:
+            h.send_response(302)
+            h.send_header("Location", self.config["redirect_to"])
+            h.send_header("Content-Length", "0")
+            h.end_headers()
+            return
         expected_to = self.endpoint if action == "Get" else self.service_url
         if to != expected_to:
             return self._fault(h, "ClientErrorInvalidTo")
@@ -272,7 +285,7 @@ class FakeScanner:
 
     def _op_Get(self, h, req):
         c = self.config
-        self._send(h, envelope(
+        body = envelope(
             "<mex:Metadata>"
             '<mex:MetadataSection Dialect="http://schemas.xmlsoap.org/ws/2006/02/devprof/ThisModel">'
             f"<wsdp:ThisModel><wsdp:Manufacturer>{c['manufacturer']}</wsdp:Manufacturer>"
@@ -283,9 +296,13 @@ class FakeScanner:
             "</mex:MetadataSection>"
             '<mex:MetadataSection Dialect="http://schemas.xmlsoap.org/ws/2006/02/devprof/Relationship">'
             "<wsdp:Relationship><wsdp:Hosted><wsa:EndpointReference>"
-            f"<wsa:Address>{self.service_url}</wsa:Address></wsa:EndpointReference>"
+            f"<wsa:Address>{c['hosted_address'] or self.service_url}</wsa:Address>"
+            "</wsa:EndpointReference>"
             "<wsdp:Types>wscn:ScannerServiceType</wsdp:Types></wsdp:Hosted>"
-            "</wsdp:Relationship></mex:MetadataSection></mex:Metadata>"))
+            "</wsdp:Relationship></mex:MetadataSection></mex:Metadata>")
+        if c["doctype"]:
+            body = body.replace(b"<soap:Envelope", b'<!DOCTYPE x [<!ENTITY a "a">]><soap:Envelope', 1)
+        self._send(h, body)
 
     def _op_GetScannerElements(self, h, req):
         c = self.config
@@ -399,11 +416,13 @@ class FakeScanner:
         if self.config["behavior"] == "jam" and self._images_sent >= self.config["jam_after"]:
             self._images_left = 0
             return self._fault(h, "ServerErrorJobFailed", code=500)
-        if self._images_left == 0:
+        if self._images_left == 0 and not self.config["endless"]:
             return self._fault(h, "ClientErrorNoImagesAvailable")
-        self._images_left -= 1
+        self._images_left = max(0, self._images_left - 1)
         self._images_sent += 1
-        if self._job_format == "tiff-single-uncompressed":
+        if self.config["image"] is not None:
+            image = self.config["image"]
+        elif self._job_format == "tiff-single-uncompressed":
             image = make_tiff(self._job_color, **self.config["tiff"])
         elif self._job_format == "exif":
             image = JPEG_EXIF
