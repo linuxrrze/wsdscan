@@ -221,7 +221,7 @@ The tests never read your real config file. The desktop app's tests are in `gui/
 
 ## Security
 
-WSD has no authentication: any device on your network can answer discovery and claim to be a scanner, and the data travels unencrypted (plain HTTP), just like with the vendors' own software. Use it on networks you trust. The tool limits what a malicious or broken device can do:
+WSD itself has no authentication: any device on your network can answer discovery and claim to be a scanner. The ES-580W serves WSD only over plain HTTP, so scan data travels unencrypted unless the network protects it (see [Securing the connection](#securing-the-connection)). The tool limits what a malicious or broken device can do:
 
 - **Pinned addresses:** device URLs are only accepted if they point to the host that answered. With `--host`, only answers from that host count, and the first answer per device wins. A configured address can't be redirected to another machine by a second device.
 - **Only HTTP and HTTPS:** no `file:`, `data:` or other URLs, no redirects. HTTP proxy settings (`http_proxy`) are ignored, so scans don't leave your network through a proxy.
@@ -237,6 +237,18 @@ WSD has no authentication: any device on your network can answer discovery and c
 - **OCR:** the OCR tools get absolute file paths and validated language codes, without a shell.
 
 The desktop app shows device texts as plain text, never as markup. Its "open-file" action is reachable over D-Bus, so it only opens PDFs the app saved itself. `tests/test_security.py` covers these cases.
+
+### Securing the connection
+
+The scanner itself offers these protections, according to Epson's administrator guides for its network scanners. They are set up in its web configuration (`https://<scanner-ip>/`):
+
+- **Admin password:** keeps others from changing the settings, including the ones below.
+- **Protocols** (Services → Protocol): switch off what you don't use, e.g. Bonjour, SLP or LLTD. wsdscan only needs **WSD**.
+- **IP filtering** (Network Security → IPsec/IP Filtering): refuse everything by default and allow only your computers. For wsdscan they need the services **WS-Discovery** (UDP 3702, only if you don't set the address) and **HTTP (Local)** (TCP 80, which carries WSD). This keeps other devices from scanning, but doesn't encrypt anything.
+- **IPsec** (same page): encrypts all traffic between the scanner and your computers, with a pre-shared key or certificates. Epson recommends it against eavesdropping and tampering. On Linux, it's set up with strongSwan or libreswan in transport mode; wsdscan needs no changes. Discovery by multicast can't be protected this way, so set the scanner's address (`--host` or in the config). This combination hasn't been tested with wsdscan yet.
+- **HTTPS:** the ES-580W serves only its web configuration over HTTPS, not WSD; `https://<scanner-ip>/WSD/DEVICE` answers 404. Other scanners may differ.
+
+IEEE 802.1X, also supported by the scanner, authenticates the scanner to the network (e.g. an enterprise Wi-Fi), not users to the scanner. Epson's guides describe no per-user login for scanning.
 
 ## Protocol
 
