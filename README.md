@@ -212,3 +212,9 @@ The tests never read your real config file. The desktop app's tests are in `gui/
 ## Desktop app
 
 `gui/` contains **Scan to PDF**, a GTK 4 / libadwaita desktop app for GNOME, KDE Plasma and Ubuntu. It has a menu entry, desktop notifications, the desktop's own file dialogs, and a preferences dialog for all the settings above. Install it with `gui/install.sh`, which also installs this tool as the `wsdscan` command. See [gui/README.md](gui/README.md).
+
+## License
+
+Copyright (C) 2026 Marcel Ritter
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE).
