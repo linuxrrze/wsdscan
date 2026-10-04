@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5e5c64"/>
+      <stop offset="1" stop-color="#3d3846"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#99c1f1" stop-opacity="0"/>
+      <stop offset="1" stop-color="#62a0ea" stop-opacity="0.9"/>
+    </linearGradient>
+  </defs>
+  <!-- sheet coming out of the feeder -->
+  <path d="M34 8h46l14 14v56H34z" fill="#ffffff" stroke="#c0bfbc" stroke-width="2"/>
+  <path d="M80 8v14h14" fill="#deddda" stroke="#c0bfbc" stroke-width="2" stroke-linejoin="round"/>
+  <g fill="#9a9996">
+    <rect x="44" y="30" width="38" height="4" rx="2"/>
+    <rect x="44" y="40" width="30" height="4" rx="2"/>
+    <rect x="44" y="50" width="34" height="4" rx="2"/>
+  </g>
+  <rect x="34" y="56" width="60" height="18" fill="url(#beam)"/>
+  <!-- scanner body -->
+  <rect x="12" y="70" width="104" height="44" rx="10" fill="url(#body)"/>
+  <rect x="12" y="70" width="104" height="8" rx="4" fill="#77767b"/>
+  <rect x="26" y="74" width="76" height="3" rx="1.5" fill="#62a0ea"/>
+  <!-- PDF badge -->
+  <rect x="74" y="88" width="34" height="18" rx="4" fill="#e01b24"/>
+  <text x="91" y="101.5" font-family="Cantarell, sans-serif" font-size="12" font-weight="bold"
+        fill="#ffffff" text-anchor="middle">PDF</text>
+</svg>

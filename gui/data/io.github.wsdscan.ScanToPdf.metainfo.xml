@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.wsdscan.ScanToPdf</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>Scan to PDF</name>
+  <summary>Scan documents from a network scanner into PDF files</summary>
+  <description>
+    <p>
+      Scan to PDF scans every sheet in your scanner's document feeder, one- or two-sided,
+      and saves the pages as one PDF. It talks directly to network scanners that support
+      WSD (Web Services on Devices), such as the Epson ES-580W; no scanner driver is needed.
+    </p>
+    <ul>
+      <li>Color, grayscale and black &amp; white</li>
+      <li>Lossless scans when JPEG compression is not good enough</li>
+      <li>Brightness and contrast, where the scanner supports them</li>
+      <li>Only offers the settings your scanner supports</li>
+      <li>Optional text recognition (OCR) with OCRmyPDF or Tesseract</li>
+      <li>Page preview; remove single pages before saving</li>
+      <li>Status bar icon and start at login</li>
+      <li>Shares its settings with the wsdscan command-line tool</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.wsdscan.ScanToPdf.desktop</launchable>
+  <provides>
+    <binary>wsdscan-gui</binary>
+    <binary>wsdscan</binary>
+  </provides>
+  <developer id="io.github.wsdscan">
+    <name>wsdscan</name>
+  </developer>
+  <categories>
+    <category>Graphics</category>
+    <category>Scanning</category>
+  </categories>
+  <keywords>
+    <keyword>scan</keyword>
+    <keyword>scanner</keyword>
+    <keyword>PDF</keyword>
+    <keyword>WSD</keyword>
+  </keywords>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.2.0" date="2026-10-04">
+      <description>
+        <p>Several scanners: add, edit and remove them in the preferences, choose a default,
+        and switch between them in the main window.</p>
+      </description>
+    </release>
+    <release version="1.1.0" date="2026-10-04">
+      <description>
+        <p>Status bar icon and start at login; page preview with an optional review step to
+        remove pages; text recognition (OCR) with OCRmyPDF or Tesseract.</p>
+      </description>
+    </release>
+    <release version="1.0.0" date="2026-10-03">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

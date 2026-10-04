@@ -1,0 +1,11 @@
+# Not part of this repository
+nextcloud-plugin/
+
+# Build and cache files
+__pycache__/
+*.pyc
+.mypy_cache/
+scan-to-pdf-*.tar.gz
+
+# Scans made while testing
+scan_*.pdf

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Scan to PDF
+GenericName=Document Scanner
+Comment=Scan documents from a network scanner into PDF files
+Exec=wsdscan-gui
+Icon=io.github.wsdscan.ScanToPdf
+Terminal=false
+Categories=Graphics;Scanning;Office;GTK;
+Keywords=scan;scanner;pdf;document;wsd;epson;
+StartupNotify=true
+StartupWMClass=io.github.wsdscan.ScanToPdf
+X-GNOME-UsesNotifications=true
