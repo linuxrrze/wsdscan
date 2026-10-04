@@ -113,7 +113,7 @@ Every scanner has **its own settings**. Different scanners can be set up differe
 
 **Preferences** (Ctrl+,) has these sections:
 - **Scanners:** the list of your scanners; the radio button marks the default. Click a scanner to open its page, or click the bin to remove it.
-  - **+** adds a scanner.
+  - **Add Scanner by Address…** (the last row of the list) adds a scanner by its IP address or host name, e.g. if it isn't found on the network. Enter the address; the name ("EPSON ES-580W") is proposed as soon as the scanner answers.
   - **Find Scanners** lists the WSD scanners on the network; **Add** takes one over (**Add Again** for a second configuration of the same device).
   - A scanner set up in an older version becomes the first entry automatically, named after the device, e.g. "EPSON ES-580W".
 - **After scanning:** open the PDF, notify when done.
@@ -122,7 +122,7 @@ Every scanner has **its own settings**. Different scanners can be set up differe
 **A scanner's page** has:
 - **Scanner:**
   - **Name:** editable. While you haven't typed one, the device's name ("EPSON ES-580W") is proposed as soon as the scanner answers.
-  - **Address:** empty = find it automatically.
+  - **IP address or host name:** empty = find it automatically on the network.
   - **Model filter.**
   - **Device:** what was found at that address.
   - **Use by default.**

@@ -171,6 +171,32 @@ class GtkTest(unittest.TestCase):
             self.assertEqual(wsdscan.load_config(scanner="EPSON ES-580W 2")["mode"], "bw")
             window.close()
 
+    def test_add_scanner_by_address(self):
+        """Regression: adding by IP address was only a small unlabeled "+" icon."""
+        with FakeScanner(model="ES-580W") as fake:
+            wsdscan.save_config({"scanner": ""}, scanners={})
+            app = wsdscan_gui.ScanApp()
+            app.register(None)
+            app.activate()
+            window = app.window
+            assert window is not None
+            prefs = wsdscan_gui.PreferencesDialog(window)
+            prefs.present(window)
+            self.assertEqual(prefs.add_row.get_title(), "Add Scanner by Address…")
+            self.assertIs(prefs.scanner_rows[-1], prefs.add_row, "last row of the list")
+            prefs.add_row.emit("activated")
+            page = prefs.open_page
+            assert page is not None
+            self.assertEqual(page.get_title(), "New Scanner")
+            self.assertEqual(page.host_row.get_title(), "IP address or host name")
+            page.LOOKUP_DELAY_MS = 10
+            page.host_row.set_text(fake.host)
+            wait_for(lambda: page.name_row.get_text() == "EPSON ES-580W")
+            prefs.close()
+            wait_for(lambda: list(app.scanners) == ["EPSON ES-580W"])
+            self.assertEqual(app.scanners["EPSON ES-580W"]["host"], fake.host)
+            window.close()
+
     def test_typed_name_is_kept(self):
         with FakeScanner(model="ES-580W") as fake:
             wsdscan.save_config({"scanner": ""}, scanners={})
@@ -230,7 +256,7 @@ class GtkTest(unittest.TestCase):
         prefs._add_found(Gtk.Button(), {"manufacturer": "Brother", "model": "ADS-1700W",
                                          "device_url": "http://192.0.2.8:80/WSD/DEVICE"})
         self.assertEqual(list(prefs.profiles), ["Scanner", "Brother ADS-1700W"])
-        self.assertEqual(len(prefs.scanner_rows), 2)
+        self.assertEqual(len([r for r in prefs.scanner_rows if r is not prefs.add_row]), 2)
         prefs.default_name = "Brother ADS-1700W"
         prefs.close()
         wait_for(lambda: list(app.scanners) == ["Scanner", "Brother ADS-1700W"])

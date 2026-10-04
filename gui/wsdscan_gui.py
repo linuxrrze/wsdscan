@@ -858,7 +858,7 @@ class ScannerPage(Adw.NavigationPage):
         ident = Adw.PreferencesGroup(title=_("Scanner"))
         self.name_row = Adw.EntryRow(use_markup=False, title=_("Name"), text=name or "")
         self.name_row.connect("changed", self._name_changed)
-        self.host_row = Adw.EntryRow(use_markup=False, title=_("Address (IP or host name; empty = find automatically)"),
+        self.host_row = Adw.EntryRow(use_markup=False, title=_("IP address or host name"),
                                      text=values["host"])
         self.model_row = Adw.EntryRow(use_markup=False, title=_("Only scanners whose name contains"),
                                       text=values["model"])
@@ -922,6 +922,9 @@ class ScannerPage(Adw.NavigationPage):
         view.add_top_bar(Adw.HeaderBar())
         self.set_child(view)
         self.connect("hiding", lambda *_a: self.apply())
+        if not name:
+            # Adding: start with the address; the name follows from the device.
+            self.connect("shown", lambda *_a: self.host_row.grab_focus())
         if connected:
             self.device_row.set_subtitle(scanform.device_label(window.device))
         else:
@@ -944,7 +947,8 @@ class ScannerPage(Adw.NavigationPage):
             self._lookup_source = 0
         host, model = self.host_row.get_text().strip(), self.model_row.get_text().strip()
         if not host and not model:
-            self.device_row.set_subtitle(_("Found automatically when scanning"))
+            self.device_row.set_subtitle(_("No address: found automatically on the network "
+                                           "when scanning"))
             return
         self.device_row.set_subtitle(_("Searching…"))
         self._lookup_source = GLib.timeout_add(self.LOOKUP_DELAY_MS, self._lookup, host, model)
@@ -1051,15 +1055,9 @@ class PreferencesDialog(Adw.PreferencesDialog):
         page = Adw.PreferencesPage()
 
         self.scanners_group = Adw.PreferencesGroup(title=_("Scanners"))
-        buttons = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
-        find = Gtk.Button(label=_("Find Scanners"))
+        find = Gtk.Button(label=_("Find Scanners"), valign=Gtk.Align.CENTER)
         find.connect("clicked", self._find_scanners)
-        add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text=_("Add Scanner"))
-        add.add_css_class("flat")
-        add.connect("clicked", lambda *_a: self.open_scanner(None))
-        buttons.append(find)
-        buttons.append(add)
-        self.scanners_group.set_header_suffix(buttons)
+        self.scanners_group.set_header_suffix(find)
         self.scanner_rows: list[Gtk.Widget] = []
         self.open_page: ScannerPage | None = None
         self._rebuild_scanners()
@@ -1164,6 +1162,15 @@ class PreferencesDialog(Adw.PreferencesDialog):
             row.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
             self.scanners_group.add(row)
             self.scanner_rows.append(row)
+        # Always last in the list: adding a scanner by its address.
+        add = Adw.ActionRow(use_markup=False, title=_("Add Scanner by Address…"),
+                            subtitle=_("If it is not found on the network"), activatable=True)
+        add.add_prefix(Gtk.Image(icon_name="list-add-symbolic"))
+        add.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+        add.connect("activated", lambda *_a: self.open_scanner(None))
+        self.add_row = add
+        self.scanners_group.add(add)
+        self.scanner_rows.append(add)
 
     def _default_toggled(self, radio, name):
         if radio.get_active():
