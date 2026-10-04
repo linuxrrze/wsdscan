@@ -66,8 +66,18 @@ Defaults below are the built-in ones; the [config file](#configuration-file) can
 | `--ocr-lang` | installed languages (see below) | Tesseract languages, e.g. `deu+eng` |
 | `--show-config` | | show the config file location, the effective defaults and the installed OCR engines and languages |
 | `-f/--force` | off | overwrite an existing output file |
+| `-v/--verbose` | off | show the protocol steps (and the OCR command) |
 
 The tool reads the sheets in the feeder until it's empty.
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| `0` | success |
+| `1` | error; nothing was saved |
+| `2` | the scan stopped partway (e.g. a paper jam); the pages scanned so far were saved |
+| `3` | the scan was saved, but text recognition failed |
 
 ### Text recognition (OCR)
 
@@ -81,9 +91,11 @@ With `--ocr`, the tool adds an invisible text layer to the PDF, so you can searc
 Other distributions: Fedora `dnf install ocrmypdf` / `tesseract`, Arch `pacman -S ocrmypdf` / `tesseract`.
 
 - **Languages:** by default, all installed Tesseract languages, with your system language and English first (e.g. `eng+deu` on an English desktop with `tesseract-ocr-deu` installed). With more than 4 installed (e.g. `tesseract-ocr-all`), only the system language and English are used, since every extra language makes recognition slower and less accurate. `--show-config` shows the installed languages and the automatic choice.
-- **Changing the languages:** set `ocr_lang = deu+eng` in the config file, choose them in the desktop app's Preferences, or use `--ocr-lang` for a single run. An empty `ocr_lang` means automatic.
+- **Changing the languages:** set `ocr_lang = deu+eng` in the config file (for all scanners in `[scan]`, or per scanner), choose them on a scanner's page in the desktop app's Preferences, or use `--ocr-lang` for a single run. An empty `ocr_lang` means automatic.
 - **Checks before scanning:** if `--ocr` is requested but no engine or a requested language is missing, the tool stops before feeding any paper.
 - **If text recognition fails after scanning:** the PDF is kept without text, a warning explains why, and the exit code is `3`.
+
+### Configuration file
 
 `~/.config/wsdscan/config.ini` (or `$WSDSCAN_CONFIG`) sets your own defaults. The **Scan to PDF** desktop app edits it in its preferences, so settings made there also apply to this command. You can also edit it by hand:
 
@@ -96,13 +108,7 @@ outdir = ~/Documents/Scans
 filename = scan_{date}_{time}.pdf
 ```
 
-Precedence, highest first:
-1. command-line options
-2. `WSDSCAN_HOST` / `WSDSCAN_MODEL`
-3. the config file
-4. built-in defaults
-
-`./wsdscan.py --show-config` shows the result, including the configured scanners.
+See [Precedence](#precedence) below. `./wsdscan.py --show-config` shows the result, including the configured scanners.
 
 #### Multiple scanners
 
@@ -128,9 +134,11 @@ outdir = ~/Documents/Home
 ./wsdscan.py --list                        # network scanners; configured ones are marked [Office]
 ```
 
-Precedence, highest first:
+#### Precedence
+
+Highest first:
 1. command-line options
-2. environment variables
+2. environment variables (`WSDSCAN_SCANNER`, `WSDSCAN_HOST`, `WSDSCAN_MODEL`)
 3. the selected `[scanner NAME]`
 4. `[scan]`
 5. built-in defaults
@@ -159,8 +167,6 @@ Measured with `--info` (firmware 13.SW19PB):
 - **Paper size:** up to 8.5 × 15.5 in
 - **Fixed settings:** automatic paper size off, rotation 0° only, scaling 100% only, content type "Text" only
 
-Exit codes: `0` success, `1` error (nothing saved), `2` the scan stopped partway (for example, a paper jam), and the pages scanned so far were saved, `3` the scan was saved but text recognition failed.
-
 ## Test mode
 
 `--check` lists everything the scanner reports, including manufacturer, firmware, serial, status, active conditions (e.g. an empty feeder), formats, color modes, resolutions, optical resolution and paper sizes. Values the tool can't use are marked `(unused)`.
@@ -176,11 +182,11 @@ It also lists the optional WSD settings the scanner offers. Of these, the tool u
 
 Anything else the scanner reports in that section, including vendor extensions, is listed under `other:`. "not reported" means the scanner didn't mention the setting. `--info` shows the same list without the validation step.
 
-It then asks the scanner to validate a scan ticket for every combination of source, mode and resolution with WS-Scan's `ValidateScanTicket`. No paper is fed and no scan job is created.
+The validation uses WS-Scan's `ValidateScanTicket`: no paper is fed and no scan job is created.
 
 ```sh
 ./wsdscan.py --check                       # checks the defaults: duplex, color, 300 dpi, A4
-./wsdscan.py --check -s adf -m gray -r 600 # checks specific settings
+./wsdscan.py --check -s adf -m bw -r 100   # checks specific settings
 ```
 
 The final line says whether the chosen settings would work. The exit code is `0` if they're usable and `1` if not, so it also works as a health check from scripts or cron. If the scanner doesn't implement `ValidateScanTicket`, the table is skipped and the result is based on the reported capabilities alone.
@@ -191,11 +197,22 @@ The final line says whether the chosen settings would work. The exit code is `0`
 python3 -m unittest discover -s tests -v
 ```
 
-Standard library only, about 20 seconds. `tests/fake_wsd.py` is a configurable fake WSD scanner (UDP discovery and SOAP over HTTP on ephemeral localhost ports). The suite covers:
+Standard library only, about 40 seconds. The suite uses two fakes:
+- `tests/fake_wsd.py`: a configurable fake WSD scanner (UDP discovery and SOAP over HTTP on ephemeral localhost ports).
+- `tests/fake_ocr.py`: stand-ins for `ocrmypdf` and `tesseract`.
 
-- unit tests for JPEG parsing, PDF writing, SOAP fault and multipart parsing, ticket building and settings validation
-- end-to-end runs of the CLI against the fake: duplex, one-sided and gray scans, an empty feeder, a busy scanner, a paper jam, an existing output file, unsupported settings, `--info` and `--check`
-- the config file (precedence, validation, saving), progress reporting and cancelling
+It covers:
+- unit tests for JPEG and TIFF parsing, PDF writing, SOAP fault and multipart parsing, ticket building and settings validation
+- end-to-end runs of the CLI against the fake scanner:
+  - duplex, one-sided, gray, black & white and lossless scans
+  - brightness/contrast
+  - an empty feeder, a busy scanner, a paper jam
+  - an existing output file, unsupported settings
+  - `--info`, `--check` and `--list`
+- the config file: precedence, validation, saving, scanner profiles
+- scanner discovery and `--model`
+- progress reporting, cancelling, page selection
+- text recognition: engine and language choice, failures, the per-page progress
 
 The tests never read your real config file. The desktop app's tests are in `gui/tests`.
 
@@ -207,11 +224,16 @@ The tests never read your real config file. The desktop app's tests are in `gui/
 2. WS-Transfer `Get` on that URL returns the scanner service URL.
 3. `GetScannerElements` returns capabilities and status.
 4. `CreateScanJob` returns a job ID and token.
-5. `RetrieveImage` is called repeatedly, returning one JPEG per page side (MTOM multipart), until the fault `ClientErrorNoImagesAvailable` says the feeder is empty.
+5. `RetrieveImage` is called repeatedly, returning one image per page side (JPEG, or TIFF for black & white and lossless; MTOM multipart), until the fault `ClientErrorNoImagesAvailable` says the feeder is empty.
 
 ## Desktop app
 
-`gui/` contains **Scan to PDF**, a GTK 4 / libadwaita desktop app for GNOME, KDE Plasma and Ubuntu. It has a menu entry, desktop notifications, the desktop's own file dialogs, and a preferences dialog for all the settings above. Install it with `gui/install.sh`, which also installs this tool as the `wsdscan` command. See [gui/README.md](gui/README.md).
+`gui/` contains **Scan to PDF**, a GTK 4 / libadwaita desktop app for GNOME, KDE Plasma and Ubuntu, built on this tool:
+- **Scanners:** several scanners, each with its own settings, edited in its preferences.
+- **During a scan:** page preview with a counter, an optional review step to remove pages before saving and OCR, and OCR progress per page.
+- **Desktop integration:** a status bar icon, start at login, desktop notifications and the desktop's own file dialogs.
+
+Install it with `gui/install.sh`, which also installs this tool as the `wsdscan` command. See [gui/README.md](gui/README.md).
 
 ## License
 

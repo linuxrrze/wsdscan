@@ -37,17 +37,18 @@ To remove it: `./install.sh --uninstall` (add `--system` if you installed with i
 ```sh
 gui/install.sh --dist                  # creates scan-to-pdf-<version>.tar.gz
 # on the other computer:
-tar -xzf scan-to-pdf-1.0.0.tar.gz && cd scan-to-pdf-1.0.0 && ./install.sh
+tar -xzf scan-to-pdf-<version>.tar.gz && cd scan-to-pdf-<version> && ./install.sh
 ```
 
 ## Using it
 
 1. Put the pages in the scanner's document feeder.
-2. Open **Scan to PDF**. It finds the scanner (or uses the address from the preferences) and shows it at the top.
+2. Open **Scan to PDF**. It connects to your scanner and shows it at the top. With several scanners configured, choose one in the **Scanner** selector; the app starts with the one used last. Without any configured, it uses the one it finds on the network.
 3. Check the file name and folder. The **Scan settings** row shows the current settings, e.g. "Both sides · Color · 300 dpi · A4". Click it (or press Ctrl+E) to change them in a separate dialog:
-   - The dialog has sides, color, resolution, paper size, lossless, brightness/contrast, and **Recognize text (OCR)**. It only offers what your scanner supports.
+   - The dialog has sides, color, resolution, paper size, lossless, brightness/contrast, **Recognize text (OCR)** and **Review pages before saving**. It only offers what your scanner supports.
    - Changes apply to the next scans.
-   - **Save as Defaults** keeps them for future sessions and for the `wsdscan` command; **Reset to Defaults** goes back to the saved ones.
+   - **Save for This Scanner** keeps them as the scanner's settings, also for `wsdscan --scanner NAME`. Without a configured scanner the button is **Save as Defaults**.
+   - **Reset to Defaults** goes back to the saved settings.
 4. Click **Scan** (or press Ctrl+Enter). Each page appears as a thumbnail under **Pages** as soon as it's scanned, with a page counter. **Cancel** (Esc) stops after the current page.
 5. With **Review pages before saving** switched on (Scan settings; default off, i.e. every page is processed), the app pauses after the last page:
    - Untick the pages you don't want, e.g. blank backs, then click **Save**.
@@ -78,7 +79,7 @@ sudo apt install ocrmypdf            # or: sudo apt install tesseract-ocr
 sudo apt install tesseract-ocr-deu   # more languages, e.g. German
 ```
 
-Otherwise it's greyed out, with this hint. The app checks for the tools when it starts, so restart it after installing them.
+Otherwise it's greyed out, with a hint on how to install them. The app checks for the tools when it starts, so restart it after installing them.
 
 The switch's subtitle shows the engine and languages that will be used, e.g. "OCRmyPDF · eng+deu".
 
@@ -179,6 +180,18 @@ last_scanner = Office color
 
 All keys except `scanner` can be set per scanner in `[scanner NAME]`; a scanner's values take precedence over `[scan]`. See [Multiple scanners](../README.md#multiple-scanners) in the main README.
 
+`[gui]` keys, used only by the app:
+
+| Key | Values | Notes |
+|---|---|---|
+| `open_after_scan` | `true`, `false` | open the PDF after scanning |
+| `notify` | `true`, `false` | notification when a scan finishes in the background |
+| `tray` | `true`, `false` | status bar icon |
+| `last_scanner` | scanner name | the scanner used last; the app starts with it |
+| `width`, `height` | pixels | window size, saved when the window closes |
+
+Start at login is not a config key: it's the autostart entry described above.
+
 ## Desktop integration
 
 | | GNOME / Ubuntu | KDE Plasma |
@@ -203,8 +216,8 @@ gui/
 ├── tray.py            status bar icon (StatusNotifierItem + dbusmenu over D-Bus)
 ├── install.sh         installer for users or the whole system; --dist builds a package
 ├── wsdscan.py         → ../wsdscan.py (link; the installer and --dist copy the real file)
-├── data/              .desktop file, AppStream metainfo, icon
-└── tests/             tests for the logic and desktop files; GTK smoke test
+├── data/              .desktop file, AppStream metainfo, app icon, status bar icon
+└── tests/             tests for the logic and desktop files; GTK and D-Bus tests
 ```
 
 Tests, from the repository root:
