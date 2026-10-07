@@ -880,6 +880,9 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
     on_page_image(n, image) gets each scanned page's JPEG/TIFF data.
     select_pages(images) may return the indexes of the pages to keep (in
     order); None discards the scan. Called after scanning, before saving/OCR.
+    `out` is the PDF path, or a function returning it: then it is called
+    right before saving, so the name and folder can still change while
+    scanning and during page selection.
 
     Returns (pages, complete, ocr_error): if OCR fails, the PDF is kept
     without text and ocr_error says why. Raises ScanError (ScanCancelled when
@@ -914,6 +917,8 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
         if not keep:
             raise ScanCancelled("all pages were removed; nothing was saved")
         pages = [pages[i] for i in keep]
+    if callable(out):
+        out = out()
     report("saving", len(pages))
     write_pdf(out, pages, dpi, overwrite)
     ocr_error = None

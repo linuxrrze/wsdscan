@@ -54,8 +54,10 @@ tar -xzf scan-to-pdf-<version>.tar.gz && cd scan-to-pdf-<version> && ./install.s
    - **Save for This Scanner** keeps them as the scanner's settings, also for `wsdscan --scanner NAME`. Without a configured scanner the button is **Save as Defaults**.
    - **Reset to Defaults** goes back to the saved settings.
 4. Click **Scan** (or press Ctrl+Enter). Each page appears as a thumbnail under **Pages** as soon as it's scanned, with a page counter. **Cancel** (Esc) stops after the current page.
+
+   File name and folder stay editable while scanning: they are only used when the PDF is saved, after the last page (or when you click **Save** in the review step). An empty file name falls back to the default name.
 5. With **Review pages before saving** switched on (Scan settings; default off, i.e. every page is processed), the app pauses after the last page:
-   - Untick the pages you don't want, e.g. blank backs, then click **Save**.
+   - Untick the pages you don't want, e.g. blank backs, then click **Save** (or press Enter in the file name). You can still change the file name and folder now.
    - Only the kept pages are saved and passed to text recognition.
    - **Discard Scan** saves nothing.
 6. With text recognition on, the thumbnails show the state of each page: waiting, in progress, done (✓). The counter shows "Recognizing text: page 2 of 4". This per-page counter works with **Tesseract**. **OCRmyPDF** doesn't report single pages, so with it the app shows overall progress only and marks all pages done at the end.

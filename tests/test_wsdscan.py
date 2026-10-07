@@ -599,6 +599,18 @@ class ScanToFileTest(unittest.TestCase):
         self.assertEqual(offered, [4])
         self.assertEqual(images, [(n, b"\xff\xd8") for n in (1, 2, 3, 4)])
 
+    def test_output_path_decided_when_saving(self):
+        order = []
+        with tempfile.TemporaryDirectory() as d, FakeScanner(sheets=1) as fake:
+            def path():
+                order.append("path")
+                return os.path.join(d, "late.pdf")
+            tool.scan_to_file(args(host=fake.host, model=None, source="adf"), path,
+                              select_pages=lambda pages: order.append("select") or [0],
+                              on_progress=lambda event, n: order.append(event))
+            self.assertTrue(os.path.exists(os.path.join(d, "late.pdf")))
+        self.assertEqual(order[-3:], ["select", "path", "saving"])
+
     def test_selection_can_discard(self):
         with tempfile.TemporaryDirectory() as d, FakeScanner(sheets=1) as fake:
             out = os.path.join(d, "out.pdf")

@@ -333,7 +333,8 @@ def progress_text(event, pages, total=0):
     if event == "ocr_page":
         return _("Recognizing text: page {n} of {total}").format(n=pages, total=total)
     if event == "review":
-        return _("Untick the pages you don’t want, then click Save.")
+        return _("Untick the pages you don’t want, then click Save. "
+                 "You can still change the file name and folder.")
     return ""
 
 

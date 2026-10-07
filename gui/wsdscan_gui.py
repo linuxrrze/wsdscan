@@ -56,6 +56,25 @@ def in_main_thread(func, *args):
     GLib.idle_add(call, priority=GLib.PRIORITY_DEFAULT)
 
 
+def call_in_main_thread(func):
+    """Run func() in the GTK main loop and return its result; for worker threads
+    that need to read widgets (only allowed in the main thread)."""
+    done, result = threading.Event(), {}
+
+    def run():
+        try:
+            result["value"] = func()
+        except Exception as e:  # handed to the worker
+            result["error"] = e
+        done.set()
+
+    in_main_thread(run)
+    done.wait()
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
+
 def run_in_thread(work, on_done, on_error):
     """Run work() in a thread; report its result or ScanError in the main loop."""
     def target():
@@ -369,8 +388,7 @@ class MainWindow(Adw.ApplicationWindow):
 
         # Document
         self.name_row = Adw.EntryRow(use_markup=False, title=_("File name"))
-        self.name_row.connect("entry-activated",
-                              lambda *_a: self.activate_action("win.scan", None))
+        self.name_row.connect("entry-activated", self._name_activated)
         self.folder_row = FolderRow(_("Folder"), cfg["outdir"] or scanform.documents_dir())
         # Scan settings: summary here, the rows live in ScanSettingsDialog.
         self.settings = ScanSettings(cfg, self.choices, app.ocr)
@@ -427,7 +445,6 @@ class MainWindow(Adw.ApplicationWindow):
                       margin_top=24, margin_bottom=24, margin_start=12, margin_end=12)
         for section in (scanner_group, doc_group, actions, self.pages_group):
             box.append(section)
-        self.form = [doc_group]
 
         self.toasts = Adw.ToastOverlay(child=Gtk.ScrolledWindow(
             child=Adw.Clamp(child=box, maximum_size=560), vexpand=True,
@@ -531,6 +548,12 @@ class MainWindow(Adw.ApplicationWindow):
 
     # --- scanning -----------------------------------------------------------
 
+    def _name_activated(self, *_args):
+        if self.review:
+            self.finish_review(True)  # Enter after editing the name: save
+        else:
+            self.activate_action("win.scan", None)
+
     def update_summary(self):
         self.settings_row.set_subtitle(scanform.settings_summary(
             self.settings.scan_values(), review=self.settings.review.get_active()))
@@ -539,8 +562,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.name_row.set_text(wsdscan.render_filename(self.app.config["filename"]))
 
     def set_busy(self, busy):
-        for widget in self.form:
-            widget.set_sensitive(not busy)
+        # File name and folder stay editable: they are read only when saving.
+        # The scan settings row is locked through its action.
         self.scan_button.set_visible(not busy)
         self.cancel_button.set_visible(busy)
         self.actions["scan"].set_enabled(not busy)
@@ -623,12 +646,10 @@ class MainWindow(Adw.ApplicationWindow):
     def on_scan(self, *_args):
         if self.cancel_event:
             return
-        out = scanform.output_path(self.folder_row.folder, self.name_row.get_text())
-        if not out:
-            self.show_error(_("Please enter a file name."))
-            return
+        if not self.name_row.get_text().strip():
+            self.new_file_name()
         try:
-            os.makedirs(os.path.dirname(out), exist_ok=True)
+            os.makedirs(self.folder_row.folder, exist_ok=True)
         except OSError as e:
             self.show_error(_("Cannot use the folder: {error}").format(error=e.strerror))
             return
@@ -662,12 +683,31 @@ class MainWindow(Adw.ApplicationWindow):
                     return None
             return result["keep"]
 
+        saved = {}
+
+        def output_path():
+            """Called by the scan right before saving: the name and folder as
+            they are now, after scanning and reviewing."""
+            def current():
+                folder = self.folder_row.folder
+                return folder, (scanform.output_path(folder, self.name_row.get_text())
+                                or scanform.output_path(folder, wsdscan.render_filename(
+                                    self.app.config["filename"])))
+            folder, out = call_in_main_thread(current)
+            try:
+                os.makedirs(folder, exist_ok=True)
+            except OSError as e:
+                raise wsdscan.ScanError(_("Cannot use the folder {folder}: {error}").format(
+                    folder=folder, error=e.strerror))
+            saved["out"] = out
+            return out
+
         def work():
             pages, complete, ocr_error = wsdscan.scan_to_file(
-                args, out, device=self.device, on_progress=progress,
+                args, output_path, device=self.device, on_progress=progress,
                 should_stop=cancel.is_set, on_page_image=page_image,
                 select_pages=select_pages if review else None)
-            return out, pages, complete, ocr_error
+            return saved["out"], pages, complete, ocr_error
 
         run_in_thread(work, self._scan_done, self._scan_failed)
 

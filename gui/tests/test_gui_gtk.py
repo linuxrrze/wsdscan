@@ -357,6 +357,40 @@ class GtkTest(unittest.TestCase):
         with open(os.path.join(out_dir, files[0]), "rb") as f:
             self.assertEqual(f.read().count(b"/Type /Page "), 2)
 
+    def test_name_and_folder_changed_before_saving(self):
+        with FakeScanner(model="ES-580W", sheets=1) as fake:
+            _app, window, out_dir = self.start_app(fake)
+            window.settings.review.set_active(True)
+            window.on_scan()
+            wait_for(lambda: window.review is not None)
+            # Editable while the scan waits for the review decision.
+            self.assertTrue(window.name_row.is_sensitive())
+            self.assertTrue(window.folder_row.is_sensitive())
+            self.assertFalse(window.settings_row.is_sensitive(), "scan settings stay locked")
+            other = tempfile.mkdtemp(prefix="wsdscan-gtk-other-")
+            new_folder = os.path.join(other, "Invoices")  # created when saving
+            window.name_row.set_text("ACME invoice")
+            window.folder_row.set_folder(new_folder)
+            window.name_row.emit("entry-activated")  # Enter saves during the review
+            wait_for(lambda: window.cancel_event is None)
+            window.close()
+        self.assertEqual(os.listdir(new_folder), ["ACME invoice.pdf"])
+        self.assertEqual(os.listdir(out_dir), [])
+
+    def test_empty_name_falls_back_to_default(self):
+        with FakeScanner(model="ES-580W", sheets=1) as fake:
+            _app, window, out_dir = self.start_app(fake, filename="Fallback {date}")
+            window.settings.review.set_active(True)
+            window.on_scan()
+            wait_for(lambda: window.review is not None)
+            window.name_row.set_text("   ")
+            window.finish_review(True)
+            wait_for(lambda: window.cancel_event is None)
+            window.close()
+        files = os.listdir(out_dir)
+        self.assertEqual(len(files), 1)
+        self.assertTrue(files[0].startswith("Fallback "))
+
     def test_review_discard_saves_nothing(self):
         with FakeScanner(model="ES-580W", sheets=1) as fake:
             _app, window, out_dir = self.start_app(fake)
