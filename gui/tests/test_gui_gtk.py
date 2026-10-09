@@ -465,6 +465,74 @@ class GtkTest(unittest.TestCase):
             self.assertEqual(app.config["host"], fake.host)
             window.close()
 
+    def test_scanner_found_later(self):
+        """Started before the scanner (or network) was reachable: the window
+        keeps looking, and a late failure of an older attempt is ignored."""
+        import threading
+        from unittest import mock
+        with FakeScanner(model="ES-580W") as fake:
+            wsdscan.save_config({"host": fake.host})
+            real_find = wsdscan.find_scanner
+            calls = []
+            release = threading.Event()
+
+            def find(host, model=None):
+                calls.append(host)
+                if len(calls) == 1:
+                    raise wsdscan.ScanError("no WSD scanner answered")
+                if len(calls) == 3:
+                    release.wait(10)  # a slow attempt that fails after a newer one
+                    raise wsdscan.ScanError("timed out")
+                return real_find(host, model)
+
+            with mock.patch.object(wsdscan, "find_scanner", find), \
+                    mock.patch.object(wsdscan_gui.MainWindow, "RETRY_SECONDS", 1):
+                app = wsdscan_gui.ScanApp()
+                app.register(None)
+                app.activate()
+                window = app.window
+                assert window is not None
+                wait_for(lambda: window.banner.get_revealed())
+                wait_for(lambda: window.device is not None)  # retried by itself
+                self.assertFalse(window.banner.get_revealed())
+                self.assertEqual(window.title.get_subtitle(), window.scanner_row.get_title())
+
+                window.connect_scanner()   # attempt 3: hangs, then fails
+                window.connect_scanner()   # attempt 4: finds the scanner
+                wait_for(lambda: window.device is not None)
+                release.set()
+                wait_for(lambda: len(calls) >= 4)
+                deadline = time.monotonic() + 0.5
+                while time.monotonic() < deadline:
+                    GLib.MainContext.default().iteration(False)
+                    time.sleep(0.01)
+                self.assertIsNotNone(window.device)
+                self.assertFalse(window.banner.get_revealed(), "stale failure ignored")
+                window.close()
+
+    def test_not_set_up_and_not_reachable_differ(self):
+        from unittest import mock
+        not_found = wsdscan.ScannerNotFound("no WSD scanner answered")
+        with mock.patch.object(wsdscan, "find_scanner", side_effect=not_found):
+            app = wsdscan_gui.ScanApp()
+            app.register(None)
+            app.activate()
+            window = app.window
+            assert window is not None
+            wait_for(lambda: window.banner.get_revealed())
+            self.assertEqual(window.title.get_subtitle(), "No scanner set up")
+            self.assertEqual(window.banner.get_button_label(), "Add Scanner")
+            self.assertEqual(window.banner.get_action_name(), "app.preferences")
+
+            wsdscan.save_config({"scanner": "Office"}, scanners={"Office": {"host": "192.0.2.1"}})
+            app.select_scanner("Office")
+            wait_for(lambda: window.title.get_subtitle() == "Scanner not reachable")
+            self.assertEqual(window.scanner_row.get_title(), "Office")
+            self.assertEqual(window.banner.get_button_label(), "Retry")
+            self.assertEqual(window.banner.get_action_name(), "win.reconnect")
+            self.assertTrue(window.banner.get_revealed())
+            window.close()
+
     def test_status_bar_gone_while_locked(self):
         """GNOME removes the status bar host while the screen is locked: the
         hidden window opens only if the host is still missing after unlock."""

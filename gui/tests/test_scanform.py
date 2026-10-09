@@ -99,6 +99,46 @@ class ChoicesTest(unittest.TestCase):
         self.assertEqual(scanform.device_label(device), "EPSON ES-580W · 127.0.0.1")
 
 
+class ScannerProblemTest(unittest.TestCase):
+    NOT_FOUND = wsdscan.ScannerNotFound("no WSD scanner answered on 192.0.2.1")
+    SEVERAL = wsdscan.ScannerChoiceNeeded("2 scanners found (A; B)")
+
+    def problem(self, error, **config):
+        return scanform.scanner_problem(error, {"scanner": "", "host": "", "model": "", **config})
+
+    def test_nothing_set_up(self):
+        p = self.problem(self.NOT_FOUND)
+        self.assertEqual((p.status, p.button, p.action), ("No scanner set up", "Add Scanner",
+                                                          "app.preferences"))
+        self.assertTrue(p.can_scan and p.retry, "it may still turn up on the network")
+        p = self.problem(self.SEVERAL)
+        self.assertEqual((p.status, p.title, p.action), ("Choose a scanner", "Several scanners found",
+                                                         "app.preferences"))
+        self.assertFalse(p.can_scan or p.retry)
+
+    def test_set_up_scanner_not_reachable(self):
+        p = self.problem(self.NOT_FOUND, scanner="Office", host="192.0.2.1")
+        self.assertEqual((p.status, p.title), ("Scanner not reachable", "Office"))
+        self.assertEqual(p.detail, "Not reachable at 192.0.2.1 · trying again")
+        self.assertIn("“Office” is not reachable", p.banner)
+        self.assertEqual((p.button, p.action), ("Retry", "win.reconnect"))
+        self.assertTrue(p.can_scan and p.retry)
+        p = self.problem(self.NOT_FOUND, scanner="Office", model="ES-580")
+        self.assertEqual(p.detail, "Not found on the network · trying again")
+        p = self.problem(self.NOT_FOUND, host="192.0.2.1")  # old config without profiles
+        self.assertEqual((p.status, p.title), ("Scanner not reachable", "192.0.2.1"))
+
+    def test_set_up_scanner_other_errors(self):
+        p = self.problem(self.SEVERAL, scanner="Office", model="EPSON")
+        self.assertEqual(p.status, "Choose a scanner")
+        self.assertIn("Set its address", p.banner)
+        self.assertFalse(p.can_scan)
+        error = wsdscan.ScanError("could not read scanner capabilities: busy")
+        p = self.problem(error, scanner="Office", host="192.0.2.1")
+        self.assertEqual((p.status, p.title, p.detail), ("Scanner error", "Office", str(error)))
+        self.assertEqual(p.action, "app.preferences")
+
+
 class OcrStatusTest(unittest.TestCase):
     def test_unavailable(self):
         status = scanform.OcrStatus([], [])

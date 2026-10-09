@@ -359,7 +359,7 @@ class DiscoveryTest(unittest.TestCase):
         self.assertEqual(self.find(devices=["uuid:brother", "uuid:printer"])["model"], "ADS-1700W")
 
     def test_several_scanners_need_a_choice(self):
-        with self.assertRaisesRegex(tool.ScanError, r"2 scanners found \(EPSON ES-580W at "
+        with self.assertRaisesRegex(tool.ScannerChoiceNeeded, r"2 scanners found \(EPSON ES-580W at "
                                     r"192\.168\.2\.13; Brother ADS-1700W at 192\.168\.2\.20\); "
                                     r"pass --host <ip> or --model <name>"):
             self.find()
@@ -374,14 +374,23 @@ class DiscoveryTest(unittest.TestCase):
             self.find(model="canon")
 
     def test_devices_without_scan_service_are_ignored(self):
-        with self.assertRaisesRegex(tool.ScanError, "offers a scan service"):
+        with self.assertRaisesRegex(tool.ScannerNotFound, "offers a scan service"):
             self.find(devices=["uuid:printer"])
+
+    def test_no_answer_is_not_found(self):
+        with mock.patch.object(tool, "probe", return_value=[]):
+            with self.assertRaisesRegex(tool.ScannerNotFound, "no WSD scanner answered on 192.0.2.1"):
+                tool.find_scanner("192.0.2.1")
+        with mock.patch.object(tool, "resolve", return_value=set()):
+            with self.assertRaisesRegex(tool.ScannerNotFound, "cannot resolve"):
+                tool.probe("scanner.invalid")
 
     def test_host_with_model_check(self):
         self.assertEqual(self.find(host="192.168.2.13", model="580",
                                    devices=["uuid:epson"])["model"], "ES-580W")
-        with self.assertRaisesRegex(tool.ScanError, "no scanner matches"):
+        with self.assertRaisesRegex(tool.ScanError, "no scanner matches") as error:
             self.find(host="192.168.2.13", model="ADS", devices=["uuid:epson"])
+        self.assertNotIsInstance(error.exception, tool.ScannerNotFound, "it answered")
 
 
 

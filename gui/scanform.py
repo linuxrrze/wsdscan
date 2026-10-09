@@ -452,6 +452,58 @@ def device_label(device):
     return f"{device_name(device)} · {wsdscan.urlsplit(device['device_url']).hostname}"
 
 
+def scanner_configured(config):
+    return bool(config.get("scanner") or config.get("host"))
+
+
+def scanner_problem(error, config):
+    """What the main window shows when looking for the scanner failed.
+
+    Tells apart "no scanner set up" (and none found automatically), "the set
+    up scanner does not answer" and other errors. Returns a SimpleNamespace:
+    status (window subtitle), title and detail (scanner row), banner,
+    button and action (banner button), can_scan, retry (look again later).
+    """
+    name = config.get("scanner") or config.get("host") or ""
+    host = config.get("host") or ""
+    preferences = "app.preferences"
+    if not scanner_configured(config):
+        if isinstance(error, wsdscan.ScannerChoiceNeeded):
+            return SimpleNamespace(
+                status=_("Choose a scanner"), title=_("Several scanners found"),
+                detail=str(error),
+                banner=_("Several scanners are on the network. Choose yours in the preferences."),
+                button=_("Choose Scanner"), action=preferences, can_scan=False, retry=False)
+        if isinstance(error, wsdscan.ScannerNotFound):
+            return SimpleNamespace(
+                status=_("No scanner set up"), title=_("No scanner set up"),
+                detail=_("None found automatically on the network"),
+                banner=_("No scanner is set up, and none was found on the network. "
+                         "Add your scanner in the preferences."),
+                button=_("Add Scanner"), action=preferences, can_scan=True, retry=True)
+    elif isinstance(error, wsdscan.ScannerNotFound):
+        where = (_("Not reachable at {host}").format(host=host) if host
+                 else _("Not found on the network"))
+        return SimpleNamespace(
+            status=_("Scanner not reachable"), title=name,
+            detail=_("{where} · trying again").format(where=where),
+            banner=_("“{name}” is not reachable. Check that it is switched on and "
+                     "connected; it is looked for again automatically.").format(name=name),
+            button=_("Retry"), action="win.reconnect", can_scan=True, retry=True)
+    elif isinstance(error, wsdscan.ScannerChoiceNeeded):
+        return SimpleNamespace(
+            status=_("Choose a scanner"), title=name, detail=str(error),
+            banner=_("Several scanners match “{name}”. Set its address in the "
+                     "preferences.").format(name=name),
+            button=_("Preferences"), action=preferences, can_scan=False, retry=False)
+    return SimpleNamespace(
+        status=_("Scanner error"), title=name or _("Scanner"), detail=str(error),
+        banner=(_("“{name}” could not be used (see below). Check its settings in the "
+                  "preferences.").format(name=name) if name
+                else _("The scanner could not be used (see below).")),
+        button=_("Preferences"), action=preferences, can_scan=True, retry=True)
+
+
 def describe_scanner(device, caps, name=""):
     """(title, subtitle) for the main window's scanner row.
 

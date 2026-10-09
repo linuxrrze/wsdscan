@@ -356,10 +356,14 @@ class PageTile(Gtk.Box):
 
 
 class MainWindow(Adw.ApplicationWindow):
+    RETRY_SECONDS = 30  # look for a missing scanner again (e.g. started before the network)
+
     def __init__(self, app):
         super().__init__(application=app, title=scanform.APP_NAME)
         self.app = app
         self.device = None
+        self._connect_token = 0
+        self._retry_source = 0
         self.choices = scanform.Choices.unknown()
         self.cancel_event = None
         gui = app.gui_config
@@ -380,8 +384,7 @@ class MainWindow(Adw.ApplicationWindow):
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu,
                                        primary=True, tooltip_text=_("Main Menu")))
 
-        self.banner = Adw.Banner(use_markup=False, button_label=_("Preferences"))
-        self.banner.connect("button-clicked", lambda *_a: app.activate_action("preferences", None))
+        self.banner = Adw.Banner(use_markup=False)  # text and button: scanform.scanner_problem
 
         # Scanner: selector (with two or more configured scanners) and status
         self.scanner_choice = ChoiceRow(_("Scanner"), [], None)
@@ -473,6 +476,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._add_action("reconnect", lambda *_a: self.connect_scanner())
         self._add_action("scan-settings", lambda *_a: ScanSettingsDialog(self).present(self))
         self.connect("close-request", self._on_close)
+        monitor = Gio.NetworkMonitor.get_default()
+        network = monitor.connect("network-changed", self._network_changed)
+        self.connect("destroy", lambda *_a: (monitor.disconnect(network), self._cancel_retry()))
         self.connect_scanner()
 
     def refresh_scanner_choice(self):
@@ -515,15 +521,22 @@ class MainWindow(Adw.ApplicationWindow):
 
     # --- scanner connection --------------------------------------------------
 
-    def connect_scanner(self):
+    def connect_scanner(self, quiet=False):
+        """Look for the scanner. quiet: a retry in the background that keeps
+        showing "not found" until the scanner answers."""
         cfg = self.app.config
-        self.device = None
-        self.spinner.set_visible(True)
-        self.scanner_row.set_title(_("Scanner"))
-        self.scanner_row.set_subtitle(_("Searching…"))
-        self.title.set_subtitle(_("Looking for the scanner…"))
-        self.banner.set_revealed(False)
-        self.actions["scan"].set_enabled(False)
+        self._cancel_retry()
+        self._connect_token += 1
+        token = self._connect_token
+        if not quiet:
+            self.device = None
+            self.spinner.set_visible(True)
+            self.scanner_row.set_title(_("Scanner"))
+            self.scanner_row.set_subtitle(_("Searching…"))
+            self.title.set_subtitle(_("Looking for the scanner…") if scanform.scanner_configured(cfg)
+                                    else _("Looking for scanners on the network…"))
+            self.banner.set_revealed(False)
+            self.actions["scan"].set_enabled(False)
 
         def work():
             device = wsdscan.find_scanner(cfg["host"] or None, cfg["model"] or None)
@@ -533,7 +546,30 @@ class MainWindow(Adw.ApplicationWindow):
                 raise wsdscan.ScanError(f"could not read scanner capabilities: {e}")
             return device, caps
 
-        run_in_thread(work, self._connected, self._connect_failed)
+        # Only the latest attempt counts: an older one that times out later
+        # must not report "not found" over a scanner found since.
+        run_in_thread(work, lambda result: token == self._connect_token and self._connected(result),
+                      lambda error: token == self._connect_token and self._connect_failed(error))
+
+    def _cancel_retry(self):
+        if self._retry_source:
+            GLib.source_remove(self._retry_source)
+            self._retry_source = 0
+
+    def _retry_connect(self):
+        self._retry_source = 0
+        if self.device is not None:
+            return GLib.SOURCE_REMOVE
+        if self.app.busy:  # a scan looks for the scanner itself
+            self._retry_source = GLib.timeout_add_seconds(self.RETRY_SECONDS, self._retry_connect)
+        else:
+            self.connect_scanner(quiet=True)
+        return GLib.SOURCE_REMOVE
+
+    def _network_changed(self, _monitor, available):
+        if available and self.device is None and self._retry_source:
+            self._cancel_retry()
+            self._retry_source = GLib.timeout_add_seconds(2, self._retry_connect)
 
     def _connected(self, result):
         device, caps = result
@@ -546,18 +582,23 @@ class MainWindow(Adw.ApplicationWindow):
         self.scanner_row.set_subtitle(subtitle)
         self.title.set_subtitle(title)
         self.spinner.set_visible(False)
-        self.actions["scan"].set_enabled(True)
+        self.banner.set_revealed(False)
+        self.actions["scan"].set_enabled(not self.app.busy)
 
     def _connect_failed(self, error):
+        problem = scanform.scanner_problem(error, self.app.config)
         self.spinner.set_visible(False)
-        self.scanner_row.set_title(_("No scanner"))
-        self.scanner_row.set_subtitle(str(error))
-        self.title.set_subtitle(_("Scanner not found"))
-        self.banner.set_title(_("Scanner not found. Check that it is on and that WSD is enabled, "
-                                "or set its address in the preferences."))
+        self.scanner_row.set_title(problem.title)
+        self.scanner_row.set_subtitle(problem.detail)
+        self.title.set_subtitle(problem.status)
+        self.banner.set_title(problem.banner)
+        self.banner.set_button_label(problem.button)
+        self.banner.set_action_name(problem.action)
         self.banner.set_revealed(True)
-        # Allow trying anyway: the scan looks for the scanner again.
-        self.actions["scan"].set_enabled(True)
+        # The scan looks for the scanner again, so it may be tried anyway.
+        self.actions["scan"].set_enabled(problem.can_scan and not self.app.busy)
+        if problem.retry:
+            self._retry_source = GLib.timeout_add_seconds(self.RETRY_SECONDS, self._retry_connect)
 
     # --- scanning -----------------------------------------------------------
 

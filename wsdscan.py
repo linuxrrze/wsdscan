@@ -109,6 +109,14 @@ class ScanCancelled(ScanError):
     """The scan was stopped on request (should_stop returned True)."""
 
 
+class ScannerNotFound(ScanError):
+    """No scanner answered: switched off, not reachable, or none on the network."""
+
+
+class ScannerChoiceNeeded(ScanError):
+    """Several scanners answered and nothing says which one to use."""
+
+
 def die(msg):
     raise ScanError(msg)
 
@@ -338,7 +346,7 @@ def probe(host, timeout=3.0):
         name, port = parse_host(host)
         allowed = resolve(name)
         if not allowed:
-            die(f"cannot resolve scanner address {clean(name)!r}")
+            raise ScannerNotFound(f"cannot resolve scanner address {clean(name)!r}")
         target = (name, port)
     else:
         target = (WSD_MULTICAST, WSD_PORT)
@@ -353,7 +361,8 @@ def probe(host, timeout=3.0):
         try:
             sock.sendto(msg, target)
         except OSError as e:
-            die(f"cannot send the discovery request to {clean(target[0])}: {clean(e)}")
+            raise ScannerNotFound(f"cannot send the discovery request to "
+                                  f"{clean(target[0])}: {clean(e)}")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             sock.settimeout(max(0.1, deadline - time.monotonic()))
@@ -422,8 +431,8 @@ def discover(host):
     devices = probe(host)
     if not devices:
         where = host or "the local network (multicast)"
-        die(f"no WSD scanner answered on {where}. Check that WSD is enabled on "
-            "the scanner" + ("" if host else ", or pass --host <ip>"))
+        raise ScannerNotFound(f"no WSD scanner answered on {where}. Check that WSD is "
+                              "enabled on the scanner" + ("" if host else ", or pass --host <ip>"))
     found = []
     for endpoint, xaddrs in devices:
         device = get_device(endpoint, xaddrs)
@@ -431,7 +440,7 @@ def discover(host):
             log(f"  found {describe_device(device)}")
             found.append(device)
     if not found:
-        die(f"none of the {len(devices)} WSD device(s) offers a scan service")
+        raise ScannerNotFound(f"none of the {len(devices)} WSD device(s) offers a scan service")
     return found
 
 
@@ -455,8 +464,8 @@ def find_scanner(host, model=None):
             + "; ".join(describe_device(d) for d in found))
     if len(matches) > 1 and not host:
         hint = "pass --host <ip>" + ("" if model else " or --model <name>")
-        die(f"{len(matches)} scanners found ("
-            + "; ".join(describe_device(d) for d in matches) + f"); {hint}")
+        raise ScannerChoiceNeeded(f"{len(matches)} scanners found ("
+                                  + "; ".join(describe_device(d) for d in matches) + f"); {hint}")
     return matches[0]
 
 

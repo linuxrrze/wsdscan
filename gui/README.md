@@ -74,7 +74,7 @@ When the scan is done:
 | Ctrl+Enter | Scan |
 | Ctrl+E | Scan settings |
 | Esc | Cancel the scan |
-| F5 | Reconnect to the scanner |
+| F5 | Reconnect to the scanner (a missing scanner is also looked for every 30 seconds) |
 | Ctrl+, | Preferences |
 | Ctrl+Q | Quit |
 
