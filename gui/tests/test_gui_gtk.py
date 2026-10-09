@@ -429,6 +429,39 @@ class GtkTest(unittest.TestCase):
             self.assertEqual(app.config["host"], fake.host)
             window.close()
 
+    def test_status_bar_gone_while_locked(self):
+        """GNOME removes the status bar host while the screen is locked: the
+        hidden window opens only if the host is still missing after unlock."""
+        from types import SimpleNamespace
+        from unittest import mock
+        app = wsdscan_gui.ScanApp()
+        app.register(None)
+        app.activate()
+        window = app.window
+        assert window is not None
+        window.set_visible(False)  # closed to the status bar
+        app.tray = SimpleNamespace(available=False)
+        app.session_lock = SimpleNamespace(locked=False)
+        timers = []
+        with mock.patch.object(wsdscan_gui.GLib, "timeout_add_seconds",
+                               lambda _s, callback: timers.append(callback)):
+            app._tray_available(False)
+            app.session_lock.locked = True  # reported just after the host vanished
+            timers.pop()()
+            self.assertFalse(window.is_visible(), "not opened while locked")
+            app.session_lock.locked = False
+            app._session_lock_changed(False)
+            app.tray.available = True  # the host is back after unlock
+            timers.pop()()
+            self.assertFalse(window.is_visible())
+
+            app.tray.available = False  # no host after unlock: never invisible
+            app._session_lock_changed(False)
+            timers.pop()()
+            self.assertTrue(window.is_visible())
+        app.tray = app.session_lock = None
+        window.close()
+
     def test_window_scans_into_folder(self):
         out_dir = tempfile.mkdtemp(prefix="wsdscan-gtk-out-")
         with FakeScanner(model="ES-580W", formats=["exif", "tiff-single-uncompressed"],

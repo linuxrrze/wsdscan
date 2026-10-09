@@ -95,7 +95,7 @@ By default, the app uses all installed languages, with your system language and 
 
 In **Preferences → Status bar**:
 - **Show icon in the status bar:** Scan to PDF keeps running there when you close the window. Clicking the icon opens or hides the window. Its menu has **Open Scan to PDF**, **Scan** (scans with the current settings, without opening the window) and **Quit**. While scanning, the icon's tooltip shows the progress. When a scan finishes in the background, a notification appears; click it to open the PDF.
-- **Start at login:** starts Scan to PDF hidden in the status bar when you log in. It creates the standard autostart entry `~/.config/autostart/io.github.wsdscan.ScanToPdf.desktop` (uninstalling removes it). If no status bar is available at login, the window opens instead, so the app is never invisible.
+- **Start at login:** starts Scan to PDF hidden in the status bar when you log in. It creates the standard autostart entry `~/.config/autostart/io.github.wsdscan.ScanToPdf.desktop` (uninstalling removes it). If no status bar is available at login, the window opens instead, so the app is never invisible. While the screen is locked (GNOME turns off the AppIndicator extension then), it waits until you unlock.
 
 To quit while the icon is shown, use **Quit** in the icon's menu or the main menu, or Ctrl+Q.
 

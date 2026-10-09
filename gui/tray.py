@@ -273,3 +273,75 @@ class TrayIcon:
                 self.on_action(action)
                 return GLib.SOURCE_REMOVE
             GLib.idle_add(run)
+
+
+LOGIN1 = "org.freedesktop.login1"
+
+
+class SessionLock:
+    """Whether the screen of this login session is locked: logind's LockedHint,
+    which GNOME Shell and KDE's screen locker set. on_change(locked) is called
+    when it changes. Without logind (or outside a session) it stays False.
+
+    GNOME turns off extensions, the AppIndicator one too, while the screen is
+    locked, so the status bar host disappears until unlock.
+    """
+
+    def __init__(self, connection, on_change):
+        self.connection = connection  # the system bus
+        self.on_change = on_change
+        self.locked = False
+        self.path = None
+        self.signal_id = None
+
+    def start(self):
+        self.path = self._session_path()
+        if not self.path:
+            return
+        self.signal_id = self.connection.signal_subscribe(
+            LOGIN1, "org.freedesktop.DBus.Properties", "PropertiesChanged", self.path,
+            f"{LOGIN1}.Session", Gio.DBusSignalFlags.NONE, self._changed)
+        self.locked = self._read_locked()
+
+    def stop(self):
+        if self.signal_id is not None:
+            self.connection.signal_unsubscribe(self.signal_id)
+            self.signal_id = None
+
+    def _get(self, path, interface, name):
+        reply = self.connection.call_sync(
+            LOGIN1, path, "org.freedesktop.DBus.Properties", "Get",
+            GLib.Variant("(ss)", (interface, name)), GLib.VariantType.new("(v)"),
+            Gio.DBusCallFlags.NONE, 1000, None)
+        return reply.unpack()[0]
+
+    def _session_path(self):
+        try:
+            reply = self.connection.call_sync(
+                LOGIN1, "/org/freedesktop/login1", f"{LOGIN1}.Manager", "GetSession",
+                GLib.Variant("(s)", ("auto",)), GLib.VariantType.new("(o)"),
+                Gio.DBusCallFlags.NONE, 1000, None)
+            return reply.unpack()[0]
+        except GLib.Error:
+            pass
+        try:  # not started in a session (e.g. by D-Bus activation): the user's display session
+            _id, path = self._get("/org/freedesktop/login1/user/self", f"{LOGIN1}.User",
+                                  "Display")
+        except GLib.Error:
+            return None
+        return path if path != "/" else None
+
+    def _read_locked(self):
+        try:
+            return bool(self._get(self.path, f"{LOGIN1}.Session", "LockedHint"))
+        except GLib.Error:
+            return False
+
+    def _changed(self, connection, sender, path, interface, signal, params):
+        _iface, changed, invalidated = params.unpack()
+        if "LockedHint" not in changed and "LockedHint" not in invalidated:
+            return
+        locked = bool(changed["LockedHint"]) if "LockedHint" in changed else self._read_locked()
+        if locked != self.locked:
+            self.locked = locked
+            self.on_change(locked)

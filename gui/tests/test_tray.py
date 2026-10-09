@@ -6,6 +6,7 @@ Needs PyGObject and dbus-daemon (Gio.TestDBus starts a private bus).
 import os
 import shutil
 import sys
+import threading
 import time
 import unittest
 
@@ -23,6 +24,18 @@ WATCHER_XML = """
   <method name="RegisterStatusNotifierItem"><arg name="service" type="s" direction="in"/></method>
 </interface></node>
 """
+
+LOGIN1_XML = """
+<node>
+  <interface name="org.freedesktop.login1.Manager">
+    <method name="GetSession"><arg name="id" type="s" direction="in"/><arg name="path" type="o" direction="out"/></method>
+  </interface>
+  <interface name="org.freedesktop.login1.Session">
+    <property name="LockedHint" type="b" access="read"/>
+  </interface>
+</node>
+"""
+SESSION_PATH = "/org/freedesktop/login1/session/_32"
 
 
 def spin(check, timeout=5.0):
@@ -126,6 +139,73 @@ class TrayTest(unittest.TestCase):
         self.assertFalse(icon.available)
         self.start_watcher()  # a status bar appears later (e.g. extension enabled)
         spin(lambda: icon.available)
+
+
+    def start_logind(self):
+        """Fake logind with one session; returns a function that sets LockedHint.
+
+        It runs in its own thread, as logind is another process: SessionLock
+        calls it synchronously from this thread."""
+        manager, session = Gio.DBusNodeInfo.new_for_xml(LOGIN1_XML).interfaces
+        state = {"locked": False}
+        context = GLib.MainContext.new()
+        loop = GLib.MainLoop.new(context, False)
+        ready = threading.Event()
+
+        def call(conn, sender, path, iface, method, params, invocation):
+            invocation.return_value(GLib.Variant("(o)", (SESSION_PATH,)))
+
+        def get(conn, sender, path, iface, name):
+            return GLib.Variant("b", state["locked"])
+
+        def run():
+            context.push_thread_default()
+            flags = (Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+                     | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION)
+            conn = Gio.DBusConnection.new_for_address_sync(
+                self.bus.get_bus_address(), flags, None, None)
+            state["conn"] = conn
+            conn.register_object("/org/freedesktop/login1", manager, call, None, None)
+            conn.register_object(SESSION_PATH, session, None, get, None)
+            Gio.bus_own_name_on_connection(conn, "org.freedesktop.login1",
+                                           Gio.BusNameOwnerFlags.NONE,
+                                           lambda *_a: ready.set(), None)
+            loop.run()
+            context.pop_thread_default()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.assertTrue(ready.wait(5))
+        self.addCleanup(lambda: (loop.quit(), thread.join(5)))
+
+        def set_locked(locked):
+            state["locked"] = locked
+            state["conn"].emit_signal(
+                None, SESSION_PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                GLib.Variant("(sa{sv}as)", ("org.freedesktop.login1.Session",
+                                            {"LockedHint": GLib.Variant("b", locked)}, [])))
+        return set_locked
+
+    def test_session_lock_follows_locked_hint(self):
+        set_locked = self.start_logind()
+        changes = []
+        lock = self.tray_module.SessionLock(self.app_bus, changes.append)
+        lock.start()
+        self.addCleanup(lock.stop)
+        self.assertEqual(lock.path, SESSION_PATH)
+        self.assertFalse(lock.locked)
+        set_locked(True)
+        spin(lambda: changes)
+        self.assertTrue(lock.locked)
+        set_locked(False)
+        spin(lambda: len(changes) == 2)
+        self.assertEqual(changes, [True, False])
+
+    def test_session_lock_without_logind(self):
+        lock = self.tray_module.SessionLock(self.app_bus, self.fail)
+        lock.start()
+        lock.stop()
+        self.assertFalse(lock.locked)
 
 
 if __name__ == "__main__":

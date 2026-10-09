@@ -1296,6 +1296,7 @@ class ScanApp(Adw.Application):
         self.window = None
         self.ocr = scanform.OcrStatus([], [])
         self.tray = None
+        self.session_lock = None
         self.saved_files = set()  # "open-file" may only open these
         self.config_error = None
         self.busy = False
@@ -1347,7 +1348,8 @@ class ScanApp(Adw.Application):
                                          error=self.config_error))
 
     def _show_if_no_tray(self):
-        if not self.tray_active() and self.window:
+        locked = self.session_lock and self.session_lock.locked  # shown at unlock instead
+        if not self.tray_active() and self.window and not self.window.is_visible() and not locked:
             self.window.present()
         return GLib.SOURCE_REMOVE
 
@@ -1361,10 +1363,14 @@ class ScanApp(Adw.Application):
                 return
             self.tray = tray.TrayIcon(connection, self.on_tray_action, self._tray_available)
             self.tray.start()
+            self.watch_session_lock()
             self.hold()  # keep running while the window is hidden
         elif not enabled and self.tray:
             self.tray.stop()
             self.tray = None
+            if self.session_lock:
+                self.session_lock.stop()
+                self.session_lock = None
             self.release()
             if self.window and not self.window.is_visible():
                 self.window.present()
@@ -1374,7 +1380,24 @@ class ScanApp(Adw.Application):
 
     def _tray_available(self, available):
         if not available and self.window and not self.window.is_visible():
-            self.window.present()  # never leave the app invisible
+            # Never leave the app invisible, but not while the screen is
+            # locked: GNOME removes the status bar host then. The lock may be
+            # reported shortly after the host is gone, so look in a moment.
+            GLib.timeout_add_seconds(3, self._show_if_no_tray)
+
+    def watch_session_lock(self):
+        try:
+            system_bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        except GLib.Error:
+            return  # no system bus: the window opens whenever the host is gone
+        import tray
+        self.session_lock = tray.SessionLock(system_bus, self._session_lock_changed)
+        self.session_lock.start()
+
+    def _session_lock_changed(self, locked):
+        if not locked and self.tray and self.window and not self.window.is_visible():
+            # After unlock, give the status bar host time to come back.
+            GLib.timeout_add_seconds(3, self._show_if_no_tray)
 
     def status_bar_host_present(self):
         connection = self.get_dbus_connection()
