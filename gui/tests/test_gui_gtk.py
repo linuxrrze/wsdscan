@@ -5,6 +5,7 @@ available (run it on a desktop, or under `xvfb-run`).
 """
 
 import os
+import socket
 import sys
 import tempfile
 import time
@@ -14,6 +15,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 GUI = os.path.dirname(HERE)
 ROOT = os.path.dirname(GUI)
 sys.path[:0] = [GUI, ROOT, os.path.join(ROOT, "tests")]
+os.environ["LANGUAGE"] = "C"  # English texts, whatever the desktop language
 CONFIG_DIR = tempfile.mkdtemp(prefix="wsdscan-gtk-test-")
 os.environ["WSDSCAN_CONFIG"] = os.path.join(CONFIG_DIR, "config.ini")
 
@@ -509,6 +511,29 @@ class GtkTest(unittest.TestCase):
                 self.assertIsNotNone(window.device)
                 self.assertFalse(window.banner.get_revealed(), "stale failure ignored")
                 window.close()
+
+    def test_banner_goes_when_scanner_is_switched_on(self):
+        from unittest import mock
+        free = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        free.bind(("127.0.0.1", 0))
+        port = free.getsockname()[1]
+        free.close()
+        wsdscan.save_config({"scanner": "Office"},
+                            scanners={"Office": {"host": f"127.0.0.1:{port}"}})
+        with mock.patch.object(wsdscan_gui.MainWindow, "RETRY_SECONDS", 1):
+            app = wsdscan_gui.ScanApp()
+            app.register(None)
+            app.activate()
+            window = app.window
+            assert window is not None
+            wait_for(lambda: window.banner.get_revealed())
+            self.assertEqual(window.title.get_subtitle(), "Scanner not reachable")
+            with FakeScanner(model="ES-580W", udp_port=port):  # switched on
+                wait_for(lambda: window.device is not None)
+                self.assertFalse(window.banner.get_revealed())
+                self.assertEqual(window.scanner_row.get_title(), "Office")
+                self.assertIn("Idle", window.scanner_row.get_subtitle())
+            window.close()
 
     def test_not_set_up_and_not_reachable_differ(self):
         from unittest import mock

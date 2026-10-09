@@ -121,7 +121,7 @@ class ScanSettings:
         self.lossless_wanted = bool(values["lossless"])
         self._syncing = False
         self.source = ChoiceRow(_("Sides"), choices.sources, values["source"])
-        self.mode = ChoiceRow(_("Color"), choices.modes, values["mode"])
+        self.mode = ChoiceRow(scanform.pgettext("setting", "Color"), choices.modes, values["mode"])
         self.resolution = ChoiceRow(_("Resolution"), self._resolution_options(),
                                     choices.pick_resolution(values["resolution"]))
         self.paper = ChoiceRow(_("Paper size"), scanform.PAPERS, values["paper"])

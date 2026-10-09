@@ -322,6 +322,7 @@ class FakeScanner:
             "image": None,                # bytes returned by RetrieveImage instead
             "images": None,               # list of page images, used in turn
             "doctype": False,             # put a DTD into the Get response
+            "udp_port": 0,                # discovery port (0 = any free one)
         }
         unknown = set(config) - set(self.config)
         if unknown:
@@ -358,7 +359,7 @@ class FakeScanner:
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.http_port = self.http.server_address[1]
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udp.bind(("127.0.0.1", 0))
+        self.udp.bind(("127.0.0.1", self.config["udp_port"]))
         self.udp_port = self.udp.getsockname()[1]
         self.device_url = f"http://127.0.0.1:{self.http_port}/WSD/DEVICE"
         self.service_url = f"http://127.0.0.1:{self.http_port}{self.config['service_path']}"

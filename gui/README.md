@@ -214,6 +214,19 @@ Start at login is not a config key: it's the autostart entry described above.
 
 On KDE, the app sets `GDK_DEBUG=portals` for itself so GTK uses KDE's dialogs through the portal. Set `GDK_DEBUG` yourself to override this.
 
+## Languages
+
+The app is in English and German. It follows your desktop language (`LANGUAGE`, else `LC_ALL`, `LC_MESSAGES` or `LANG`); to start it in another language, e.g. English on a German desktop: `LANGUAGE=en wsdscan-gui`. Messages from the scanner and from the `wsdscan` core, shown e.g. under a scanner's name when something fails, stay in English.
+
+Translations are plain gettext files in `gui/po/` (`de.po`), read directly by the app, so no gettext tools or build step are needed. After changing or adding texts in the code:
+
+```sh
+python3 gui/tools/update_po.py      # adds new texts, drops old ones, lists what is untranslated
+python3 gui/tools/update_po.py fr   # starts a new language (po/fr.po)
+```
+
+Then translate the empty `msgstr` entries. The tests check that every catalog is complete, current and keeps the `{placeholders}`. Name and description in the menu entry are translated in `data/*.desktop` and `data/*.metainfo.xml`.
+
 ## Files
 
 ```
@@ -222,10 +235,13 @@ gui/
 ├── scanform.py        GUI logic without GTK (choices per scanner, file names, settings,
 │                      status bar menu, autostart entry)
 ├── tray.py            status bar icon (StatusNotifierItem + dbusmenu over D-Bus)
+├── i18n.py            loads the translations from po/ (no gettext tools needed)
+├── po/                translations: de.po
 ├── install.sh         installer for users or the whole system; --dist builds a package
 ├── wsdscan.py         → ../wsdscan.py (link; the installer and --dist copy the real file)
 ├── data/              .desktop file, AppStream metainfo, app icon, status bar icon
-├── tools/             screenshots.py: makes the screenshots in docs/screenshots
+├── tools/             screenshots.py: makes the screenshots in docs/screenshots;
+│                      update_po.py: updates the translations from the code
 └── tests/             tests for the logic and desktop files; GTK and D-Bus tests
 ```
 

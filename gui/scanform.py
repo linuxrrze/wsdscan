@@ -5,7 +5,6 @@ choices a scanner allows, turning form values into scan arguments and the
 shared config file, and user-facing progress texts.
 """
 
-import gettext
 import os
 import shutil
 import subprocess
@@ -13,9 +12,13 @@ import sys
 import unicodedata
 from types import SimpleNamespace
 
+import i18n
 import wsdscan
 
-_ = gettext.translation("wsdscan", fallback=True).gettext
+TRANSLATION = i18n.translation()
+_ = TRANSLATION.gettext
+ngettext = TRANSLATION.ngettext
+pgettext = TRANSLATION.pgettext  # for a word used in two meanings
 
 APP_ID = "io.github.wsdscan.ScanToPdf"
 APP_NAME = "Scan to PDF"
@@ -328,7 +331,7 @@ def progress_text(event, pages, total=0):
     if event == "scanning":
         return _("Scanning…")
     if event == "page":
-        return gettext.ngettext("Scanned {n} page", "Scanned {n} pages", pages).format(n=pages)
+        return ngettext("Scanned {n} page", "Scanned {n} pages", pages).format(n=pages)
     if event == "saving":
         return _("Saving PDF…")
     if event == "ocr":
@@ -344,8 +347,8 @@ def progress_text(event, pages, total=0):
 def pages_summary(scanned, kept=None):
     """Header of the page preview, e.g. '4 pages' or '3 of 4 pages kept'."""
     if kept is None or kept == scanned:
-        return gettext.ngettext("{n} page", "{n} pages", scanned).format(n=scanned)
-    return gettext.ngettext("{kept} of {n} page kept", "{kept} of {n} pages kept",
+        return ngettext("{n} page", "{n} pages", scanned).format(n=scanned)
+    return ngettext("{kept} of {n} page kept", "{kept} of {n} pages kept",
                             scanned).format(kept=kept, n=scanned)
 
 
@@ -504,6 +507,10 @@ def scanner_problem(error, config):
         button=_("Preferences"), action=preferences, can_scan=True, retry=True)
 
 
+# WS-Scan ScannerState values.
+SCANNER_STATES = {"Idle": _("Idle"), "Processing": _("Busy"), "Stopped": _("Stopped")}
+
+
 def describe_scanner(device, caps, name=""):
     """(title, subtitle) for the main window's scanner row.
 
@@ -514,6 +521,7 @@ def describe_scanner(device, caps, name=""):
     title = name or device_name(device)
     parts = [device_name(device)] if name and name != device_name(device) else []
     parts.append(wsdscan.urlsplit(device["device_url"]).hostname)
-    parts.append(caps.get("state") or "?")
+    state = caps.get("state") or "?"
+    parts.append(SCANNER_STATES.get(state, state))
     parts += caps.get("conditions") or []
     return title, " · ".join(parts)

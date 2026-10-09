@@ -63,9 +63,11 @@ if [ "$MODE" = dist ]; then
 	STAGE=$(mktemp -d)
 	trap 'rm -rf "$STAGE"' EXIT
 	mkdir -p "$STAGE/$NAME/data"
-	cp -L "$SRC_CLI" "$HERE/wsdscan_gui.py" "$HERE/scanform.py" "$HERE/tray.py" "$HERE/install.sh" \
-		"$HERE/README.md" "$STAGE/$NAME/"
+	cp -L "$SRC_CLI" "$HERE/wsdscan_gui.py" "$HERE/scanform.py" "$HERE/tray.py" "$HERE/i18n.py" \
+		"$HERE/install.sh" "$HERE/README.md" "$STAGE/$NAME/"
 	cp "$HERE/data/"* "$STAGE/$NAME/data/"
+	mkdir -p "$STAGE/$NAME/po"
+	cp "$HERE/po/"*.po "$STAGE/$NAME/po/"
 	tar -C "$STAGE" -czf "$PWD/$NAME.tar.gz" "$NAME"
 	echo "Created $PWD/$NAME.tar.gz"
 	echo "On the target machine: tar -xzf $NAME.tar.gz && cd $NAME && ./install.sh"
@@ -132,7 +134,10 @@ if [ -z "$SRC_CLI" ]; then
 fi
 
 mkdir -p "$LIB" "$BIN" "$APPS" "$ICONS/scalable/apps" "$ICONS/symbolic/apps" "$META"
-cp -L "$SRC_CLI" "$HERE/wsdscan_gui.py" "$HERE/scanform.py" "$HERE/tray.py" "$LIB/"
+cp -L "$SRC_CLI" "$HERE/wsdscan_gui.py" "$HERE/scanform.py" "$HERE/tray.py" "$HERE/i18n.py" "$LIB/"
+rm -rf "$LIB/po"  # languages removed since the last install
+mkdir -p "$LIB/po"
+cp "$HERE/po/"*.po "$LIB/po/"
 PYTHON=$(command -v python3)
 printf '#!/bin/sh\nexec %s %s "$@"\n' "$(shell_quote "$PYTHON")" \
 	"$(shell_quote "$LIB/wsdscan_gui.py")" > "$BIN/wsdscan-gui"

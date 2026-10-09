@@ -29,6 +29,8 @@ os.environ["XDG_CONFIG_HOME"] = os.path.join(WORK, "config")
 os.environ["HOME"] = os.path.join(WORK, "home")
 SHOWN_HOST = "192.168.2.13"
 os.environ.setdefault("LANG", "en_US.UTF-8")
+# The documentation shows the English texts; SCREENSHOT_LANGUAGE=de for German ones.
+os.environ["LANGUAGE"] = os.environ.get("SCREENSHOT_LANGUAGE", "en")
 
 import gi  # noqa: E402
 

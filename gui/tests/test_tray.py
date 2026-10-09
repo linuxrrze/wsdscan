@@ -12,6 +12,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [os.path.dirname(HERE), os.path.dirname(os.path.dirname(HERE))]
+os.environ["LANGUAGE"] = "C"  # English texts, whatever the desktop language
 
 try:
     from gi.repository import Gio, GLib

@@ -5,6 +5,7 @@
   <project_license>AGPL-3.0-or-later</project_license>
   <name>Scan to PDF</name>
   <summary>Scan documents from a network scanner into PDF files</summary>
+  <summary xml:lang="de">Dokumente von einem Netzwerkscanner als PDF-Dateien scannen</summary>
   <description>
     <p>
       Scan to PDF scans every sheet in your scanner's document feeder, one- or two-sided,
@@ -20,6 +21,7 @@
       <li>Page preview; remove single pages before saving</li>
       <li>Optionally removes blank pages, e.g. empty backs</li>
       <li>Status bar icon and start at login</li>
+      <li>In English and German</li>
       <li>Shares its settings with the wsdscan command-line tool</li>
     </ul>
   </description>

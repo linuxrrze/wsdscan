@@ -15,6 +15,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 GUI = os.path.dirname(HERE)
 ROOT = os.path.dirname(GUI)
 sys.path[:0] = [GUI, ROOT, os.path.join(ROOT, "tests")]
+os.environ["LANGUAGE"] = "C"  # English texts, whatever the desktop language
 os.environ["WSDSCAN_CONFIG"] = os.path.join(tempfile.mkdtemp(prefix="wsdscan-gui-test-"),
                                             "config.ini")
 
