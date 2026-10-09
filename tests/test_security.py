@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["WSDSCAN_CONFIG"] = os.path.join(tempfile.mkdtemp(prefix="wsdscan-sec-"), "config.ini")
 
 import wsdscan as tool  # noqa: E402
-from fake_wsd import JPEG_RGB, FakeScanner, envelope, make_tiff  # noqa: E402
+from fake_wsd import JPEG_GRAY, JPEG_RGB, FakeScanner, envelope, make_tiff  # noqa: E402
 
 ES580W = {"model": "ES-580W", "service_path": "/WDP/SCAN",
           "formats": ["exif", "tiff-single-uncompressed"]}
@@ -32,7 +32,8 @@ ES580W = {"model": "ES-580W", "service_path": "/WDP/SCAN",
 def args(**overrides):
     base = {"source": "adf", "mode": "color", "resolution": 300, "paper": "a4",
             "lossless": False, "brightness": None, "contrast": None, "ocr": False,
-            "ocr_engine": "auto", "ocr_lang": None, "host": None, "model": None}
+            "ocr_engine": "auto", "ocr_lang": None, "host": None, "model": None,
+            "skip_blank": False}
     base.update(overrides)
     return SimpleNamespace(**base)
 
@@ -270,6 +271,19 @@ class CraftedImageTest(unittest.TestCase):
         sof = bad.index(b"\xff\xc0")
         bad[sof + 5:sof + 9] = b"\0\0\0\0"
         self.assert_fails_fast(bytes(bad), tool.jpeg_info)
+
+    def test_blank_check_of_crafted_jpeg(self):
+        # A small JPEG claiming 60000 x 60000 pixels: not analyzed at all, and
+        # a broken one fails fast instead of decoding millions of blocks.
+        huge = bytearray(JPEG_GRAY)
+        sof = huge.index(b"\xff\xc0")
+        huge[sof + 5:sof + 9] = struct.pack(">HH", 60000, 60000)
+        start = time.monotonic()
+        self.assertFalse(tool.page_is_blank(bytes(huge)))
+        huge[sof + 5:sof + 9] = struct.pack(">HH", 10000, 10000)
+        self.assertFalse(tool.page_is_blank(bytes(huge)))
+        self.assert_fails_fast(bytes(huge), tool.jpeg_block_grid)
+        self.assertLess(time.monotonic() - start, 1.0)
 
     def test_image_size_reads_headers_only(self):
         self.assertEqual(tool.image_size(JPEG_RGB), (24, 16))

@@ -49,7 +49,7 @@ tar -xzf scan-to-pdf-<version>.tar.gz && cd scan-to-pdf-<version> && ./install.s
 1. Put the pages in the scanner's document feeder.
 2. Open **Scan to PDF**. It connects to your scanner and shows it at the top. With several scanners configured, choose one in the **Scanner** selector; the app starts with the one used last. Without any configured, it uses the one it finds on the network.
 3. Check the file name and folder. The **Scan settings** row shows the current settings, e.g. "Both sides · Color · 300 dpi · A4". Click it (or press Ctrl+E) to change them in a separate dialog:
-   - The dialog has sides, color, resolution, paper size, lossless, brightness/contrast, **Recognize text (OCR)** and **Review pages before saving**. It only offers what your scanner supports.
+   - The dialog has sides, color, resolution, paper size, lossless, brightness/contrast, **Recognize text (OCR)**, **Remove blank pages** and **Review pages before saving**. It only offers what your scanner supports.
    - Changes apply to the next scans.
    - **Save for This Scanner** keeps them as the scanner's settings, also for `wsdscan --scanner NAME`. Without a configured scanner the button is **Save as Defaults**.
    - **Reset to Defaults** goes back to the saved settings.
@@ -57,10 +57,12 @@ tar -xzf scan-to-pdf-<version>.tar.gz && cd scan-to-pdf-<version> && ./install.s
 
    File name and folder stay editable while scanning: they are only used when the PDF is saved, after the last page (or when you click **Save** in the review step). An empty file name falls back to the default name.
 5. With **Review pages before saving** switched on (Scan settings; default off, i.e. every page is processed), the app pauses after the last page:
-   - Untick the pages you don't want, e.g. blank backs, then click **Save** (or press Enter in the file name). You can still change the file name and folder now.
+   - Untick the pages you don't want, then click **Save** (or press Enter in the file name). You can still change the file name and folder now.
+   - With **Remove blank pages** on, blank pages already start unticked; tick one to keep it after all.
    - Only the kept pages are saved and passed to text recognition.
    - **Discard Scan** saves nothing.
-6. With text recognition on, the thumbnails show the state of each page: waiting, in progress, done (✓). The counter shows "Recognizing text: page 2 of 4". This per-page counter works with **Tesseract**. **OCRmyPDF** doesn't report single pages, so with it the app shows overall progress only and marks all pages done at the end.
+6. With **Remove blank pages** on and no review, blank pages are left out of the PDF right away: their thumbnails are dimmed and the message after saving says how many were removed. How pages are judged blank is described in [Blank pages](../README.md#blank-pages).
+7. With text recognition on, the thumbnails show the state of each page: waiting, in progress, done (✓). The counter shows "Recognizing text: page 2 of 4". This per-page counter works with **Tesseract**. **OCRmyPDF** doesn't report single pages, so with it the app shows overall progress only and marks all pages done at the end.
 
 When the scan is done:
 - A message offers to **Open** the PDF.
@@ -127,7 +129,7 @@ Every scanner has **its own settings**. Different scanners can be set up differe
   - **Name:** editable. While you haven't typed one, the name of the scanner found at the address ("EPSON ES-580W") is proposed.
   - **Device:** what was found at that address.
   - **Use by default.**
-- **Scan settings:** sides, color, resolution, paper size, lossless, brightness/contrast, text recognition on/off, review pages. Once the device has answered, only what it supports is offered.
+- **Scan settings:** sides, color, resolution, paper size, lossless, brightness/contrast, text recognition on/off, remove blank pages, review pages. Once the device has answered, only what it supports is offered.
 - **Text recognition (OCR):** engine (Automatic, OCRmyPDF, Tesseract) and languages. **Choose languages automatically** is on by default and shows its current result. Turn it off to pick languages from the installed ones.
 - **Saving:** folder, file-name template (`{date}`, `{time}`).
 - **Duplicate** (a copy to configure differently) and **Remove Scanner**.
@@ -181,6 +183,7 @@ last_scanner = Office color
 | `ocr` | `true`, `false` | recognize text; needs OCRmyPDF or Tesseract |
 | `ocr_engine` | `auto`, `ocrmypdf`, `tesseract` | `auto` prefers OCRmyPDF |
 | `ocr_lang` | e.g. `deu+eng`, or empty | empty = automatic: all installed languages (system language and English first); only those two if more than 4 are installed |
+| `skip_blank` | `true`, `false` | remove blank pages (`--skip-blank`); in the app's review step they start unticked |
 | `review_pages` | `true`, `false` | app only: review the pages before saving and OCR; the command ignores it |
 
 All keys except `scanner` can be set per scanner in `[scanner NAME]`; a scanner's values take precedence over `[scan]`. See [Multiple scanners](../README.md#multiple-scanners) in the main README.

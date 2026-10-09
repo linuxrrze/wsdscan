@@ -39,6 +39,7 @@ export WSDSCAN_HOST=192.168.2.13     # or pass --host each time
 ./wsdscan.py --lossless photo.pdf # color without JPEG compression
 ./wsdscan.py --brightness 200 --contrast 100 faint.pdf
 ./wsdscan.py --ocr letter.pdf         # searchable PDF (needs OCRmyPDF or Tesseract)
+./wsdscan.py --skip-blank mixed.pdf   # leave out the empty backs of one-sided pages
 ./wsdscan.py -p letter --outdir ~/Scans
 ./wsdscan.py -v                   # show the protocol steps
 ```
@@ -62,6 +63,7 @@ Defaults below are the built-in ones; the [config file](#configuration-file) can
 | `-i/--info` | | print capabilities and status, then exit |
 | `-c/--check` | | test mode: `--info` plus scanner-side validation of every setting combination; no scan |
 | `--ocr` / `--no-ocr` | off | recognize text so the PDF is searchable (see below) |
+| `--skip-blank` / `--no-skip-blank` | off | remove blank pages, e.g. empty backs in a duplex scan (see below) |
 | `--ocr-engine` | `auto` | `auto` (OCRmyPDF if installed, else Tesseract), `ocrmypdf`, `tesseract` |
 | `--ocr-lang` | installed languages (see below) | Tesseract languages, e.g. `deu+eng` |
 | `--show-config` | | show the config file location, the effective defaults and the installed OCR engines and languages |
@@ -94,6 +96,15 @@ Other distributions: Fedora `dnf install ocrmypdf` / `tesseract`, Arch `pacman -
 - **Changing the languages:** set `ocr_lang = deu+eng` in the config file (for all scanners in `[scan]`, or per scanner), choose them on a scanner's page in the desktop app's Preferences, or use `--ocr-lang` for a single run. An empty `ocr_lang` means automatic.
 - **Checks before scanning:** if `--ocr` is requested but no engine or a requested language is missing, the tool stops before feeding any paper.
 - **If text recognition fails after scanning:** the PDF is kept without text, a warning explains why, and the exit code is `3`.
+
+### Blank pages
+
+With `--skip-blank`, pages without content are left out of the PDF, e.g. the empty backs when a stack of one-sided and two-sided pages is scanned on both sides. The tool prints `page 4 is blank` for each one and the number removed at the end.
+
+- **How it decides:** each page is reduced to the average brightness of 8 × 8 pixel blocks. It counts as blank if hardly any block is clearly darker than the paper. It ignores the outer 5 % at the top and bottom and 9 % at the sides (shadows, feeder marks, filing holes). Light show-through from the other side, colored paper and specks of dust still count as blank. A single text line, a page number or initials count as content (at 150 dpi and below, a lone page number may count as blank).
+- **When in doubt, a page is kept:** pages it can't analyze (e.g. progressive JPEGs, which WSD scanners don't normally send) and pages with a lot of detail are never removed. If every page is blank, all are kept, with a warning.
+- It needs no extra programs, and takes up to about a second per page at 300 dpi while the next page is being scanned.
+- In the desktop app, blank pages start unticked in the review step, so you can keep them after all.
 
 ### Configuration file
 
@@ -262,7 +273,7 @@ IEEE 802.1X, also supported by the scanner, authenticates the scanner to the net
 
 `gui/` contains **Scan to PDF**, a GTK 4 / libadwaita desktop app for GNOME, KDE Plasma and Ubuntu, built on this tool:
 - **Scanners:** several scanners, each with its own settings, edited in its preferences.
-- **During a scan:** page preview with a counter, an optional review step to remove pages before saving and OCR, and OCR progress per page.
+- **During a scan:** page preview with a counter, optional removal of blank pages, an optional review step to remove pages before saving and OCR, and OCR progress per page.
 - **Desktop integration:** a status bar icon, start at login, desktop notifications and the desktop's own file dialogs.
 
 Install it with `gui/install.sh`, which also installs this tool as the `wsdscan` command. See [gui/README.md](gui/README.md).

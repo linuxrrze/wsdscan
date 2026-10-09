@@ -215,6 +215,8 @@ def settings_summary(values, review=False):
         parts.append(_("contrast {n}").format(n=values["contrast"]))
     if values.get("ocr"):
         parts.append(_("OCR"))
+    if values.get("skip_blank"):
+        parts.append(_("remove blank pages"))
     if review:
         parts.append(_("review pages"))
     return " · ".join(parts)
@@ -307,6 +309,7 @@ def scan_args(values):
         ocr=bool(values.get("ocr")),
         ocr_engine=values.get("ocr_engine") or "auto",
         ocr_lang=values.get("ocr_lang") or None,
+        skip_blank=bool(values.get("skip_blank")),
     )
 
 

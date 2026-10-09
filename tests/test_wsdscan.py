@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import wsdscan as tool  # noqa: E402
 from fake_ocr import make_ocr_bin, read_log  # noqa: E402
 from fake_wsd import (JPEG_EXIF, JPEG_GRAY, JPEG_RGB, JPEG_SIZE,  # noqa: E402
-                      FakeScanner, make_tiff, tiff_pixels)
+                      FakeScanner, make_jpeg, make_tiff, pack_bw, test_page, tiff_pixels)
 import zlib  # noqa: E402
 
 # Profile of the real ES-580W, as observed on the device. Keep in sync with
@@ -51,7 +51,7 @@ def caps(**overrides):
 def args(**overrides):
     base = {"source": "duplex", "mode": "color", "resolution": 300, "paper": "a4",
             "lossless": False, "brightness": None, "contrast": None,
-            "ocr": False, "ocr_engine": "auto", "ocr_lang": None}
+            "ocr": False, "ocr_engine": "auto", "ocr_lang": None, "skip_blank": False}
     base.update(overrides)
     return SimpleNamespace(**base)
 
@@ -384,6 +384,144 @@ class DiscoveryTest(unittest.TestCase):
             self.find(host="192.168.2.13", model="ADS", devices=["uuid:epson"])
 
 
+
+# A4 at 50 dpi: 8 pixels = 4 mm. Side margins (9 %) are 37 pixels wide.
+PAGE_SIZE = (413, 585)
+TEXT_LINE = (100, 300, 200, 10, 20)
+
+
+def page(**kwargs):
+    return test_page(*PAGE_SIZE, **kwargs)
+
+
+def page_formats(rows):
+    """The page as the scanner may send it: JPEG gray/color, TIFF gray/RGB/bw."""
+    width, height = len(rows[0]), len(rows)
+    gray = b"".join(rows)
+    return {
+        "jpeg gray": make_jpeg(rows),
+        "jpeg color": make_jpeg(rows, color=True, tint=(120, 136)),
+        "jpeg restart": make_jpeg(rows, color=True, restart=5),
+        "tiff gray": make_tiff("Grayscale8", width, height, pixels=gray, rows_per_strip=64),
+        "tiff rgb": make_tiff("RGB24", width, height, rows_per_strip=64,
+                              pixels=bytes(v for v in gray for _ in range(3))),
+        "tiff bw": make_tiff("BlackAndWhite1", width, height, rows_per_strip=64,
+                             pixels=pack_bw(rows)),
+    }
+
+
+class BlankPageTest(unittest.TestCase):
+    def test_block_grid_of_real_jpegs(self):
+        # libjpeg-made fixtures; block means as decoded by Pillow
+        for data, expected in ((JPEG_RGB, 38), (JPEG_EXIF, 38), (JPEG_GRAY, 128)):
+            columns, rows, values = tool.jpeg_block_grid(data)
+            self.assertEqual((columns, rows), (3, 2))
+            for value in values:
+                self.assertAlmostEqual(value, expected, delta=1.5)
+
+    def test_block_grid_matches_page(self):
+        rows = page(marks=[TEXT_LINE, (50, 40, 3, 40, 0), (296, 400, 37, 23, 90)])
+        width, height = PAGE_SIZE
+        expected = []
+        for by in range(0, height, 8):
+            for bx in range(0, width, 8):
+                block = [rows[y][x] for y in range(by, min(by + 8, height))
+                         for x in range(bx, min(bx + 8, width))]
+                expected.append(sum(block) / len(block))
+        for name, data in page_formats(rows).items():
+            if name == "tiff bw":
+                continue  # thresholded: other values
+            with self.subTest(name):
+                grid = (tool.jpeg_block_grid(data) if name.startswith("jpeg")
+                        else tool.tiff_block_grid(data))
+                self.assertEqual(grid[:2], (52, 74))
+                # JPEG edge blocks repeat the last pixels; compare the inside
+                for y in range(73):
+                    for x in range(51):
+                        self.assertAlmostEqual(grid[2][y * 52 + x], expected[y * 52 + x],
+                                               delta=1.5)
+
+    def test_detects_blank_pages(self):
+        width, height = PAGE_SIZE
+        cases = {
+            "empty": (page(), True),
+            "show-through": (page(marks=[(80, 100 + 20 * i, 250, 8, 221) for i in range(20)]),
+                             True),
+            "speck of dust": (page(marks=[(200, 200, 3, 3, 30)]), True),
+            "filing holes": (page(marks=[(10, 200, 22, 22, 60), (10, 360, 22, 22, 60)]), True),
+            "tinted paper": (page(paper=200), True),
+            "one line": (page(marks=[TEXT_LINE]), False),
+            "three small marks": (page(marks=[(120, 100, 5, 5, 0), (240, 300, 5, 5, 0),
+                                              (300, 500, 5, 5, 0)]), False),
+            "at the edge of the margin": (page(marks=[(40, 280, 4, 40, 0)]), False),
+            "dark page": (page(paper=60), False),
+        }
+        for name, (rows, blank) in cases.items():
+            for kind, data in page_formats(rows).items():
+                if kind == "tiff bw" and name in ("dark page",):
+                    continue  # thresholded to black: no "paper" left
+                with self.subTest(name, format=kind):
+                    self.assertIs(tool.page_is_blank(data), blank)
+
+    def test_unreadable_pages_are_not_blank(self):
+        blank = make_jpeg(page())
+        sof = blank.index(b"\xff\xc0")
+        progressive = blank[:sof + 1] + b"\xc2" + blank[sof + 2:]
+        for name, data in (("progressive", progressive), ("truncated", blank[:len(blank) // 2]),
+                           ("garbage", blank[:sof] + bytes(range(256)) * 4),
+                           ("broken TIFF", make_tiff("Grayscale8")[:20]),
+                           ("detailed photo", JPEG_RGB)):  # many bits per pixel
+            with self.subTest(name):
+                self.assertFalse(tool.page_is_blank(data))
+        self.assertIsNone(tool.jpeg_block_grid(progressive))
+
+    def test_scan_removes_blank_backs(self):
+        text, blank = make_jpeg(page(marks=[TEXT_LINE])), make_jpeg(page())
+        events, flags = [], []
+        with tempfile.TemporaryDirectory() as d, FakeScanner(sheets=3, images=[text, blank]) as fake:
+            out = os.path.join(d, "out.pdf")
+            pages, complete, _err = tool.scan_to_file(
+                args(host=fake.host, model=None, skip_blank=True), out,
+                on_progress=lambda event, n: events.append((event, n)),
+                on_page_image=lambda n, data, empty: flags.append(empty))
+            with open(out, "rb") as f:
+                self.assertEqual(parse_pdf(f.read())["pages"], 3)
+        self.assertEqual((pages, complete), (3, True))
+        self.assertEqual(flags, [False, True] * 3)
+        self.assertEqual([e for e in events if e[0] == "blank"], [("blank", 2), ("blank", 4),
+                                                                   ("blank", 6)])
+        self.assertEqual(events[-1], ("saving", 3))
+
+    def test_all_blank_pages_are_kept(self):
+        events = []
+        with tempfile.TemporaryDirectory() as d, \
+                FakeScanner(sheets=1, images=[make_jpeg(page())]) as fake:
+            pages, _complete, _err = tool.scan_to_file(
+                args(host=fake.host, model=None, skip_blank=True), os.path.join(d, "out.pdf"),
+                on_progress=lambda event, n: events.append((event, n)))
+        self.assertEqual(pages, 2)
+        self.assertIn(("all_blank", 2), events)
+
+    def test_review_decides_and_off_by_default(self):
+        text, blank = make_jpeg(page(marks=[TEXT_LINE])), make_jpeg(page())
+        offered = []
+
+        def select(images, empty):
+            offered.append(empty)
+            return list(range(len(images)))  # keep the blank page after all
+
+        with tempfile.TemporaryDirectory() as d, FakeScanner(sheets=1, images=[text, blank]) as fake:
+            pages, _c, _e = tool.scan_to_file(
+                args(host=fake.host, model=None, skip_blank=True), os.path.join(d, "a.pdf"),
+                select_pages=select)
+            self.assertEqual(pages, 2)
+            with mock.patch.object(tool, "page_is_blank") as detect:
+                pages, _c, _e = tool.scan_to_file(args(host=fake.host, model=None),
+                                                  os.path.join(d, "b.pdf"), select_pages=select)
+            detect.assert_not_called()
+        self.assertEqual(offered, [[False, True], [False, False]])
+
+
 class ConfigTestBase(unittest.TestCase):
     """Isolated config file per test."""
 
@@ -424,6 +562,16 @@ class ConfigTest(ConfigTestBase):
         self.write("[scan]\noutdir = ~/Documents/Scans\n")
         self.assertEqual(tool.parse_args([]).outdir,
                          os.path.join(os.path.expanduser("~"), "Documents", "Scans"))
+
+    def test_skip_blank_setting(self):
+        self.assertFalse(tool.parse_args([]).skip_blank)
+        self.write("[scan]\nskip_blank = yes\n")
+        self.assertTrue(tool.load_config()["skip_blank"])
+        self.assertTrue(tool.parse_args([]).skip_blank)
+        self.assertFalse(tool.parse_args(["--no-skip-blank"]).skip_blank)
+        self.write("[scan]\nskip_blank = maybe\n")
+        with self.assertRaisesRegex(tool.ScanError, "skip_blank: expected true or false"):
+            tool.load_config()
 
     def test_command_line_and_environment_override_config(self):
         self.write("[scan]\nhost = 10.0.0.1\nmode = bw\nlossless = true\nbrightness = 300\n")
@@ -585,13 +733,13 @@ class ScanToFileTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, FakeScanner(**ES580W_PROFILE, sheets=2) as fake:
             out = os.path.join(d, "out.pdf")
 
-            def select(pages):
+            def select(pages, blank):
                 offered.append(len(pages))
                 return [0, 3]  # remove pages 2 and 3
 
             pages, _complete, _err = tool.scan_to_file(
                 args(host=fake.host, model=None), out,
-                on_page_image=lambda n, data: images.append((n, data[:2])),
+                on_page_image=lambda n, data, blank: images.append((n, data[:2])),
                 select_pages=select)
             with open(out, "rb") as f:
                 self.assertEqual(parse_pdf(f.read())["pages"], 2)
@@ -606,7 +754,7 @@ class ScanToFileTest(unittest.TestCase):
                 order.append("path")
                 return os.path.join(d, "late.pdf")
             tool.scan_to_file(args(host=fake.host, model=None, source="adf"), path,
-                              select_pages=lambda pages: order.append("select") or [0],
+                              select_pages=lambda pages, blank: order.append("select") or [0],
                               on_progress=lambda event, n: order.append(event))
             self.assertTrue(os.path.exists(os.path.join(d, "late.pdf")))
         self.assertEqual(order[-3:], ["select", "path", "saving"])
@@ -617,7 +765,7 @@ class ScanToFileTest(unittest.TestCase):
             for keep, message in ((None, "scan discarded"), ([], "all pages were removed")):
                 with self.subTest(keep=keep), self.assertRaisesRegex(tool.ScanCancelled, message):
                     tool.scan_to_file(args(host=fake.host, model=None), out,
-                                      select_pages=lambda pages, k=keep: k)
+                                      select_pages=lambda pages, blank, k=keep: k)
             self.assertFalse(os.path.exists(out))
 
     def test_cancel_stops_and_cancels_job(self):
@@ -733,7 +881,7 @@ class OcrTest(unittest.TestCase):
         with FakeScanner(**ES580W_PROFILE, sheets=2) as fake:
             tool.scan_to_file(args(host=fake.host, model=None, ocr=True), out,
                               on_progress=lambda event, n: events.append((event, n)),
-                              select_pages=lambda pages: [0, 1, 3])
+                              select_pages=lambda pages, blank: [0, 1, 3])
         self.assertEqual(events[-5:], [("saving", 3), ("ocr", 3), ("ocr_page", 1),
                                        ("ocr_page", 2), ("ocr_page", 3)])
         call = read_log(self.log)[0]
@@ -917,6 +1065,15 @@ class CliTest(CliBase):
             data = f.read()
         self.assertEqual(parse_pdf(data)["pages"], 2)
         self.assertEqual(data.count(b"/BitsPerComponent 1 /Decode [1 0] /Filter /FlateDecode"), 2)
+
+    def test_skip_blank(self):
+        text, blank = make_jpeg(page(marks=[TEXT_LINE])), make_jpeg(page())
+        with FakeScanner(**ES580W_PROFILE, sheets=2, images=[text, blank]) as fake:
+            r = self.run_tool(fake, "--skip-blank", "out.pdf")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("page 2 is blank", r.stderr)
+        self.assertIn("saved 2 page(s) to out.pdf (2 blank page(s) removed)", r.stdout)
+        self.assertEqual(self.pdf()["pages"], 2)
 
     def test_lossless_color(self):
         with FakeScanner(**ES580W_PROFILE, sheets=1) as fake:

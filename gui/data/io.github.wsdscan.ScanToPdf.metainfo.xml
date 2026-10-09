@@ -18,6 +18,7 @@
       <li>Only offers the settings your scanner supports</li>
       <li>Optional text recognition (OCR) with OCRmyPDF or Tesseract</li>
       <li>Page preview; remove single pages before saving</li>
+      <li>Optionally removes blank pages, e.g. empty backs</li>
       <li>Status bar icon and start at login</li>
       <li>Shares its settings with the wsdscan command-line tool</li>
     </ul>

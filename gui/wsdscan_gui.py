@@ -142,6 +142,10 @@ class ScanSettings:
         self.set_exposure(values["brightness"], values["contrast"])
         self.ocr = Adw.SwitchRow(use_markup=False, title=_("Recognize text (OCR)"))
         self.set_ocr(values)
+        self.skip_blank = Adw.SwitchRow(
+            use_markup=False, title=_("Remove blank pages"),
+            subtitle=_("For example the empty backs of one-sided pages"),
+            active=bool(values["skip_blank"]))
         self.review = Adw.SwitchRow(
             use_markup=False, title=_("Review pages before saving"),
             subtitle=_("Remove single pages before saving and text recognition"),
@@ -153,7 +157,7 @@ class ScanSettings:
 
     def rows(self):
         return [self.source, self.mode, self.resolution, self.paper, self.lossless, self.exposure,
-                self.ocr, self.review]
+                self.ocr, self.skip_blank, self.review]
 
     def _resolution_options(self):
         return [(r, f"{r} dpi") for r in self.choices.resolutions]
@@ -198,6 +202,7 @@ class ScanSettings:
 
     def set_values(self, values):
         self.review.set_active(bool(values["review_pages"]))
+        self.skip_blank.set_active(bool(values["skip_blank"]))
         self.source.set_value(values["source"])
         self.mode.set_value(values["mode"])
         self.resolution.set_value(self.choices.pick_resolution(values["resolution"]))
@@ -219,6 +224,7 @@ class ScanSettings:
             "brightness": int(self.brightness.get_value()) if exposure else None,
             "contrast": int(self.contrast.get_value()) if exposure else None,
             "ocr": self.ocr.get_active(),
+            "skip_blank": self.skip_blank.get_active(),
             "review_pages": self.review.get_active(),
         }
 
@@ -324,6 +330,11 @@ class PageTile(Gtk.Box):
     def _toggled(self, button, on_toggled):
         self.picture.set_opacity(1.0 if button.get_active() else 0.35)
         on_toggled()
+
+    def mark_blank(self, blank):
+        """A blank page starts unticked (removed unless the review keeps it)."""
+        self.keep.set_active(not blank)
+        self.picture.set_tooltip_text(_("Blank page") if blank else None)
 
     def set_review(self, review):
         self.keep.set_visible(review)
@@ -433,6 +444,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.review = None      # (threading.Event, result dict) while reviewing
         self.ocr_tiles = []     # tiles of the pages being recognized
         self.ocr_total = 0
+        self.blank_pages = 0    # found blank in the current scan
+        self.scan_reviewed = False
         self.page_count = Gtk.Label(css_classes=["dim-label"])
         self.page_grid = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
                                      min_children_per_line=2, max_children_per_line=6,
@@ -584,8 +597,10 @@ class MainWindow(Adw.ApplicationWindow):
         self.ocr_tiles = []
         self.pages_group.set_visible(False)
 
-    def add_page(self, number, pixbuf):
+    def add_page(self, number, pixbuf, blank=False):
         tile = PageTile(number, pixbuf, self.update_page_count)
+        if blank:
+            tile.mark_blank(True)
         self.tiles.append(tile)
         self.page_grid.append(tile)
         self.pages_group.set_visible(True)
@@ -625,9 +640,17 @@ class MainWindow(Adw.ApplicationWindow):
 
     def on_progress(self, event, pages):
         """Scan progress in the main loop: counter, OCR state per page."""
+        if event == "blank":
+            self.blank_pages += 1
+            return  # the tile shows it; keep the progress text
+        if event == "all_blank":
+            self.blank_pages = 0
+            for tile in self.tiles:  # they are saved after all
+                tile.mark_blank(False)
+            return
         if event == "ocr":
-            if not self.ocr_tiles:
-                self.ocr_tiles = list(self.tiles)
+            if not self.ocr_tiles:  # without review: the pages not removed as blank
+                self.ocr_tiles = [tile for tile in self.tiles if tile.kept()]
             self.ocr_total = pages
             for tile in self.ocr_tiles:
                 tile.set_ocr_state("waiting")
@@ -663,6 +686,8 @@ class MainWindow(Adw.ApplicationWindow):
         cancel = self.cancel_event
         self.clear_pages()
         self.ocr_total = 0
+        self.blank_pages = 0  # found blank, removed unless reviewed
+        self.scan_reviewed = review
         self.cancel_button.set_sensitive(True)
         self.set_busy(True)
         self.set_progress(scanform.progress_text("scanning", 0))
@@ -670,10 +695,10 @@ class MainWindow(Adw.ApplicationWindow):
         def progress(event, pages):
             in_main_thread(self.on_progress, event, pages)
 
-        def page_image(number, data):
-            in_main_thread(self.add_page, number, make_thumbnail(data))
+        def page_image(number, data, blank):
+            in_main_thread(self.add_page, number, make_thumbnail(data), blank)
 
-        def select_pages(images):
+        def select_pages(images, blank):
             """Wait (in the scan thread) for the user's review decision."""
             decided, result = threading.Event(), {"keep": None}
             in_main_thread(self.start_review, decided, result)
@@ -730,7 +755,10 @@ class MainWindow(Adw.ApplicationWindow):
             for tile in self.ocr_tiles:
                 tile.set_ocr_state(None)
         name = os.path.basename(out)
-        if complete:
+        if complete and self.blank_pages and not self.scan_reviewed:
+            message = _("Saved {pages} pages as “{name}”, removed {blank} blank pages").format(
+                pages=pages, name=name, blank=self.blank_pages)
+        elif complete:
             message = _("Saved {pages} pages as “{name}”").format(pages=pages, name=name)
         else:
             message = _("Scan stopped early; saved {pages} pages as “{name}”").format(

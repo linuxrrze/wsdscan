@@ -198,7 +198,7 @@ def main():
                    lossless=True, ocr=True, outdir=out, filename="Invoice {date}")
     wsdscan.save_config({"scanner": "Office"}, scanners={
         "Office": profile,
-        "Office b/w": dict(profile, mode="bw", review_pages=True, ocr=False)},
+        "Office b/w": dict(profile, mode="bw", review_pages=True, skip_blank=True, ocr=False)},
         sections={"gui": {"width": 520, "height": 940, "last_scanner": "Office"}})
 
     app = wsdscan_gui.ScanApp()
@@ -213,12 +213,12 @@ def main():
     settle()
     save_window(window, os.path.join(out_dir, "main-window.png"))
 
-    # 2. Review step: untick the blank back page.
+    # 2. Review step: the blank back page was found and starts unticked.
     window.scanner_choice.set_value("Office b/w")
     wait(lambda: window.app.config["scanner"] == "Office b/w" and window.device is not None)
     window.on_scan()
     wait(lambda: window.review is not None)
-    window.tiles[1].keep.set_active(False)
+    assert [tile.kept() for tile in window.tiles] == [True, False, True, True]
     settle()
     save_window(window, os.path.join(out_dir, "review-pages.png"))
     window.finish_review(True)

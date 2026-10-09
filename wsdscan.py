@@ -874,12 +874,17 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
     on_progress(event, n) is called with these events:
       "connecting", "scanning"   n = 0
       "page"                     n = pages scanned so far
+      "blank"                    n = number of a page found blank (args.skip_blank)
+      "all_blank"                n = pages kept because all of them were blank
       "saving"                   n = pages that will be saved
       "ocr"                      n = pages to recognize (OCR starts)
       "ocr_page"                 n = pages recognized so far (Tesseract only)
-    on_page_image(n, image) gets each scanned page's JPEG/TIFF data.
-    select_pages(images) may return the indexes of the pages to keep (in
-    order); None discards the scan. Called after scanning, before saving/OCR.
+    on_page_image(n, image, blank) gets each scanned page's JPEG/TIFF data,
+    and whether it is blank (always False without args.skip_blank).
+    select_pages(images, blank) may return the indexes of the pages to keep
+    (in order); None discards the scan. Called after scanning, before
+    saving/OCR. Without it, blank pages are removed (args.skip_blank) unless
+    all pages are blank.
     `out` is the PDF path, or a function returning it: then it is called
     right before saving, so the name and folder can still change while
     scanning and during page selection.
@@ -899,11 +904,15 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
         die(f"could not read scanner capabilities: {e}")
     validate(args, caps)
     report("scanning", 0)
+    blank = []
 
     def page_done(n, image):
         report("page", n)
+        blank.append(bool(args.skip_blank) and page_is_blank(image))
+        if blank[-1]:
+            report("blank", n)
         if on_page_image:
-            on_page_image(n, image)
+            on_page_image(n, image, blank[-1])
 
     try:
         pages, dpi, complete = scan(device["service"], args, caps, on_page=page_done,
@@ -911,12 +920,17 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
     except SoapFault as e:
         die(f"scan failed: {e}")
     if select_pages:
-        keep = select_pages(pages)
+        keep = select_pages(pages, blank)
         if keep is None:
             raise ScanCancelled("scan discarded")
         if not keep:
             raise ScanCancelled("all pages were removed; nothing was saved")
         pages = [pages[i] for i in keep]
+    elif any(blank):
+        if all(blank):
+            report("all_blank", len(pages))  # rather than saving nothing
+        else:
+            pages = [page for page, empty in zip(pages, blank) if not empty]
     if callable(out):
         out = out()
     report("saving", len(pages))
@@ -1185,6 +1199,280 @@ def tiff_image(data):
         "invert": photometric == 0,  # WhiteIsZero: 0 means white
         "pixels": pixels,
     }
+
+
+
+# --- blank page detection ------------------------------------------------------
+# A page is reduced to the average brightness (0-255) of each 8x8 pixel
+# block: for JPEG straight from the DC coefficients, without a full decode.
+# Ignore this much of each edge: shadows, feeder marks and, at the sides,
+# filing holes (12 mm from the edge on A4, on either side of the sheet).
+BLANK_MARGIN_X = 0.09
+BLANK_MARGIN_Y = 0.05
+BLANK_MIN_PAPER = 100  # darker "paper" means the page is not blank
+BLANK_INK_DELTA = 32  # a block this much darker than the paper holds ink;
+# light show-through from the back of the sheet stays below it
+# At most this share of ink blocks (at least 2): blank. At 300 dpi that is
+# about 2 mm² of ink: a speck of dust, but not a page number or initials.
+BLANK_MAX_INK = 0.00004
+# A JPEG this large per pixel holds too much detail for a blank page (a blank
+# page compresses to a fraction of it), so it is not decoded at all.
+BLANK_MAX_JPEG_BITS = 4  # bits per pixel
+# Larger pages are not analyzed (A4 at 1200 dpi has 140 million pixels): a
+# crafted header must not keep the scan busy for minutes.
+BLANK_MAX_PIXELS = 150_000_000
+
+
+def page_is_blank(image):
+    """True if a scanned JPEG/TIFF page is (nearly) empty paper. Pages that
+    cannot be analyzed count as not blank: they are never dropped by mistake."""
+    try:
+        width, height = image_size(image)
+        if width * height > BLANK_MAX_PIXELS:
+            return False
+        if image_kind(image) == "tiff":
+            grid = tiff_block_grid(image)
+        else:
+            if len(image) * 8 > BLANK_MAX_JPEG_BITS * width * height:
+                return False
+            grid = jpeg_block_grid(image)
+    except ScanError:
+        return False
+    return grid is not None and grid_is_blank(*grid)
+
+
+def grid_is_blank(columns, rows, values):
+    """Decide on block brightness values (row by row, columns x rows)."""
+    mx, my = round(columns * BLANK_MARGIN_X), round(rows * BLANK_MARGIN_Y)
+    inner = [v for y in range(my, rows - my)
+             for v in values[y * columns + mx:(y + 1) * columns - mx]]
+    if len(inner) < 16:
+        return False
+    paper = sorted(inner)[int(len(inner) * 0.9)]
+    if paper < BLANK_MIN_PAPER:
+        return False
+    limit = paper - BLANK_INK_DELTA
+    ink = sum(1 for v in inner if v < limit)
+    return ink <= max(2, BLANK_MAX_INK * len(inner))
+
+
+def block_sums(pixels, width, height, stride, offset=0, step=1, group=8):
+    """Sums of the blocks of 8 rows and `group` samples of one 8-bit channel,
+    row by row. Edge blocks are smaller; callers divide by block_areas()."""
+    rows = (height + 7) // 8
+    sums = []
+    for by in range(rows):
+        acc = [0] * width
+        for y in range(by * 8, min(by * 8 + 8, height)):
+            start = y * stride + offset
+            acc = list(map(int.__add__, acc, pixels[start:start + width * step:step]))
+        sums.extend(sum(acc[x:x + group]) for x in range(0, width, group))
+    return sums
+
+
+def block_areas(width, height):
+    columns, rows = (width + 7) // 8, (height + 7) // 8
+    return [min(8, width - 8 * bx) * min(8, height - 8 * by)
+            for by in range(rows) for bx in range(columns)]
+
+
+BIT_COUNTS = bytes(bin(i).count("1") for i in range(256))
+
+
+def tiff_block_grid(data):
+    img = tiff_image(data)
+    width, height, pixels = img["width"], img["height"], img["pixels"]
+    areas = block_areas(width, height)
+    if img["bits"] == 1:
+        # One byte = 8 pixels side by side: count the set bits per block.
+        stride = (width + 7) // 8
+        ones = block_sums(pixels.translate(BIT_COUNTS), stride, height, stride, group=1)
+        ones_are_black = img["invert"]  # WhiteIsZero; else BlackIsZero: 1 = white
+        # (min/max: padding bits at the end of a row may be set)
+        values = [min(255, max(0, 255 * (area - n if ones_are_black else n) / area))
+                  for n, area in zip(ones, areas)]
+    elif img["colorspace"] == "DeviceGray":
+        sums = block_sums(pixels, width, height, width)
+        values = [s / area for s, area in zip(sums, areas)]
+        if img["invert"]:
+            values = [255 - v for v in values]
+    else:
+        channels = [block_sums(pixels, width, height, width * 3, c, 3) for c in range(3)]
+        values = [(0.299 * r + 0.587 * g + 0.114 * b) / area
+                  for r, g, b, area in zip(*channels, areas)]
+    return (width + 7) // 8, (height + 7) // 8, values
+
+
+def huffman_lookup(counts, symbols):
+    """Table indexed by the next 16 bits: (code length, symbol)."""
+    table = [None] * 65536
+    code, k = 0, 0
+    for length in range(1, 17):
+        for _ in range(counts[length - 1]):
+            if k >= len(symbols) or code >= 1 << length:
+                return None
+            first = code << (16 - length)
+            table[first:first + (1 << (16 - length))] = [(length, symbols[k])] * (1 << (16 - length))
+            code += 1
+            k += 1
+        code <<= 1
+    return table
+
+
+def jpeg_block_grid(data):
+    """Average brightness of each 8x8 block of a baseline JPEG's first (luma
+    or gray) component, from the DC coefficients: (columns, rows, values).
+    None for JPEGs this does not read (progressive, arithmetic, 12-bit,
+    several scans); raises ScanError for broken data."""
+    quant, dc_tables, ac_tables = {}, {}, {}
+    frame, restart = None, 0
+    i = 2
+    while True:
+        while i < len(data) and data[i] == 0xFF and i + 1 < len(data) and data[i + 1] == 0xFF:
+            i += 1
+        if i + 4 > len(data) or data[i] != 0xFF:
+            die("could not read JPEG image")
+        marker = data[i + 1]
+        length = int.from_bytes(data[i + 2:i + 4], "big")
+        segment = data[i + 4:i + 2 + length]
+        if length < 2 or len(segment) != length - 2:
+            die("could not read JPEG image")
+        i += 2 + length
+        if marker == 0xDB:  # quantization tables: only the DC value is needed
+            j = 0
+            while j < len(segment):
+                precision, table_id = segment[j] >> 4, segment[j] & 15
+                size = 128 if precision else 64
+                if j + 1 + size > len(segment):
+                    die("could not read JPEG image")
+                quant[table_id] = (int.from_bytes(segment[j + 1:j + 3], "big") if precision
+                                   else segment[j + 1])
+                j += 1 + size
+        elif marker == 0xC4:  # Huffman tables
+            j = 0
+            while j < len(segment):
+                table_class, table_id = segment[j] >> 4, segment[j] & 15
+                counts = segment[j + 1:j + 17]
+                total = sum(counts)
+                symbols = segment[j + 17:j + 17 + total]
+                if len(counts) != 16 or len(symbols) != total:
+                    die("could not read JPEG image")
+                table = huffman_lookup(counts, symbols)
+                if table is None:
+                    die("could not read JPEG image")
+                (ac_tables if table_class else dc_tables)[table_id] = table
+                j += 17 + total
+        elif marker == 0xDD and len(segment) >= 2:
+            restart = int.from_bytes(segment[:2], "big")
+        elif marker in (0xC0, 0xC1):  # baseline / extended sequential, Huffman
+            if len(segment) < 6 or segment[0] != 8:
+                return None
+            height = int.from_bytes(segment[1:3], "big")
+            width = int.from_bytes(segment[3:5], "big")
+            check_image_size(width, height)
+            count = segment[5]
+            comps = [segment[6 + 3 * k:9 + 3 * k] for k in range(count)]
+            if not comps or any(len(c) != 3 for c in comps):
+                die("could not read JPEG image")
+            frame = (width, height, [(c[0], c[1] >> 4, c[1] & 15, c[2]) for c in comps])
+        elif 0xC2 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            return None  # progressive, lossless, hierarchical or arithmetic coding
+        elif marker == 0xDA:
+            break
+        elif marker == 0xD9:
+            die("could not read JPEG image")
+    if frame is None or not segment:
+        die("could not read JPEG image")
+    width, height, comps = frame
+    scan = [segment[1 + 2 * k:3 + 2 * k] for k in range(segment[0])]
+    if len(scan) != len(comps):
+        return None  # components in separate scans
+    hmax = max(c[1] for c in comps)
+    vmax = max(c[2] for c in comps)
+    if not all(1 <= c[1] <= 4 and 1 <= c[2] <= 4 for c in comps):
+        die("could not read JPEG image")
+    try:
+        units = []  # per component: (blocks h, blocks v, DC table, AC table)
+        for (_id, h, v, _tq), (_sid, tables) in zip(comps, scan):
+            units.append((h, v, dc_tables[tables >> 4], ac_tables[tables & 15]))
+        q0 = quant[comps[0][3]]
+    except KeyError:
+        die("could not read JPEG image")
+    if len(comps) == 1:  # non-interleaved: one block per MCU
+        units = [(1, 1) + units[0][2:]]
+        mcu_columns, mcu_rows = (width + 7) // 8, (height + 7) // 8
+        h0 = v0 = 1
+    else:
+        mcu_columns = -(-width // (8 * hmax))
+        mcu_rows = -(-height // (8 * vmax))
+        h0, v0 = comps[0][1], comps[0][2]
+    grid_columns, grid_rows = mcu_columns * h0, mcu_rows * v0
+    dc = [0] * (grid_columns * grid_rows)
+
+    # Entropy-coded data up to the end marker, split at restart markers.
+    end = data.find(b"\xff\xd9", i)
+    coded = data[i:end if end >= 0 else len(data)]
+    parts = re.split(rb"\xff[\xd0-\xd7]", coded)
+    total = mcu_columns * mcu_rows
+    per_part = restart or total
+    mcu = 0
+    for part in parts:
+        if mcu >= total:
+            break
+        # Pad with 1 bits, as JPEG does, so reading ahead never runs out.
+        bits = part.replace(b"\xff\x00", b"\xff") + b"\xff" * 8
+        limit = len(bits) - 4
+        acc = nbits = p = 0
+        preds = [0] * len(units)
+        for _ in range(min(per_part, total - mcu)):
+            row, column = divmod(mcu, mcu_columns)
+            base = row * v0 * grid_columns + column * h0
+            for u, (h, v, dc_table, ac_table) in enumerate(units):
+                for block in range(h * v):
+                    if nbits < 32:  # at most 16 code + 16 value bits per symbol
+                        if p > limit:
+                            die("JPEG image data is truncated")
+                        acc = ((acc & ((1 << nbits) - 1)) << 32) | int.from_bytes(
+                            bits[p:p + 4], "big")
+                        p += 4
+                        nbits += 32
+                    entry = dc_table[(acc >> (nbits - 16)) & 0xFFFF]
+                    if entry is None:
+                        die("could not read JPEG image")
+                    nbits -= entry[0]
+                    size = entry[1]
+                    if size:
+                        diff = (acc >> (nbits - size)) & ((1 << size) - 1)
+                        if diff < 1 << (size - 1):
+                            diff -= (1 << size) - 1
+                        nbits -= size
+                        preds[u] += diff
+                    if u == 0:
+                        dc[base + (block // h) * grid_columns + block % h] = preds[0]
+                    k = 1
+                    while k < 64:  # the AC coefficients are only skipped
+                        if nbits < 32:
+                            if p > limit:
+                                die("JPEG image data is truncated")
+                            acc = ((acc & ((1 << nbits) - 1)) << 32) | int.from_bytes(
+                                bits[p:p + 4], "big")
+                            p += 4
+                            nbits += 32
+                        entry = ac_table[(acc >> (nbits - 16)) & 0xFFFF]
+                        if entry is None:
+                            die("could not read JPEG image")
+                        rs = entry[1]
+                        nbits -= entry[0] + (rs & 15)
+                        if rs == 0:
+                            break
+                        k += (rs >> 4) + 1
+            mcu += 1
+    if mcu < total:
+        die("JPEG image data is truncated")
+    columns, rows = -(-width // 8), -(-height // 8)  # blocks inside the image
+    values = [min(255, max(0, dc[y * grid_columns + x] * q0 / 8 + 128))
+              for y in range(rows) for x in range(columns)]
+    return columns, rows, values
 
 
 def image_xobject(data):
@@ -1465,6 +1753,7 @@ CONFIG_DEFAULTS = {
     "ocr_lang": "",  # "" = system language + English
     "scanner": "",  # name of the default [scanner NAME] profile
     "review_pages": False,  # desktop app: review pages before saving (ignored by the CLI)
+    "skip_blank": False,  # remove blank pages
 }
 SCANNER_SECTION = "scanner "  # profiles: [scanner Office], [scanner Home], ...
 CONFIG_CHOICES = {
@@ -1498,7 +1787,7 @@ def parse_config_value(key, text):
             raise ValueError(str(e))
     if key == "ocr_lang" and text and not re.fullmatch(r"[a-z_]+(\+[a-z_]+)*", text):
         raise ValueError("expected Tesseract language codes like deu+eng")
-    if key in ("lossless", "ocr", "review_pages"):
+    if key in ("lossless", "ocr", "review_pages", "skip_blank"):
         if text.lower() not in ("true", "false", "yes", "no", "1", "0", "on", "off"):
             raise ValueError("expected true or false")
         return text.lower() in ("true", "yes", "1", "on")
@@ -1726,6 +2015,10 @@ def parse_args(argv=None):
                    help="transfer color/gray pages uncompressed (TIFF) and store them "
                         "losslessly instead of as JPEG; much larger files "
                         "(default: %(default)s)")
+    p.add_argument("--skip-blank", action=argparse.BooleanOptionalAction,
+                   default=cfg["skip_blank"],
+                   help="remove blank pages, e.g. the empty backs of a duplex scan; if "
+                        "all pages are blank, they are kept (default: %(default)s)")
     p.add_argument("--brightness", type=exposure_value, metavar="N", default=cfg["brightness"],
                    help=f"brightness {EXPOSURE_RANGE[0]}..{EXPOSURE_RANGE[1]} or 'default' "
                         "(experimental; default: %(default)s = scanner default)")
@@ -1813,17 +2106,26 @@ def main(argv=None):
 
     print(f"using scanner: {device['model']} ({service})", file=sys.stderr)
 
+    blank = []
+
     def progress(event, pages):
         if event == "scanning":
             print("scanning...", file=sys.stderr)
         elif event == "page":
             print(f"  page {pages}", file=sys.stderr)
+        elif event == "blank":
+            print(f"  page {pages} is blank", file=sys.stderr)
+            blank.append(pages)
+        elif event == "all_blank":
+            print("warning: all pages are blank; they were kept", file=sys.stderr)
+            blank.clear()
         elif event == "ocr":
             print("recognizing text...", file=sys.stderr)
 
     pages, complete, ocr_error = scan_to_file(args, out, device=device, on_progress=progress,
                                               overwrite=args.force)
-    print(f"saved {pages} page(s) to {out}")
+    removed = f" ({len(blank)} blank page(s) removed)" if blank else ""
+    print(f"saved {pages} page(s) to {out}{removed}")
     if not complete:
         sys.exit(2)
     if ocr_error:

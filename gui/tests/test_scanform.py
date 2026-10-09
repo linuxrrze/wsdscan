@@ -155,6 +155,8 @@ class FormTest(unittest.TestCase):
         self.assertEqual((a.ocr, a.ocr_engine, a.ocr_lang), (False, "auto", None))
         a = scanform.scan_args(dict(cfg, ocr=True, ocr_engine="tesseract", ocr_lang="deu"))
         self.assertEqual((a.ocr, a.ocr_engine, a.ocr_lang), (True, "tesseract", "deu"))
+        self.assertFalse(a.skip_blank)
+        self.assertTrue(scanform.scan_args(dict(cfg, skip_blank=True)).skip_blank)
 
     def test_settings_summary(self):
         cfg = dict(wsdscan.CONFIG_DEFAULTS)
@@ -167,6 +169,8 @@ class FormTest(unittest.TestCase):
         cfg.update(mode="bw")
         self.assertNotIn("lossless", scanform.settings_summary(cfg), "implied for b/w")
         self.assertTrue(scanform.settings_summary(dict(cfg, ocr=True)).endswith(" · OCR"))
+        self.assertTrue(scanform.settings_summary(dict(cfg, skip_blank=True), review=True)
+                        .endswith(" · remove blank pages · review pages"))
 
     def test_needs_reconnect(self):
         old = dict(wsdscan.CONFIG_DEFAULTS)

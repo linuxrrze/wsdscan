@@ -34,7 +34,7 @@ if GTK_OK:
 
 import scanform  # noqa: E402
 import wsdscan  # noqa: E402
-from fake_wsd import FakeScanner  # noqa: E402
+from fake_wsd import FakeScanner, make_jpeg, test_page  # noqa: E402
 
 
 def wait_for(check, timeout=20.0):
@@ -352,6 +352,42 @@ class GtkTest(unittest.TestCase):
             self.assertEqual(window.page_count.get_text(), "2 of 4 pages kept")
             window.finish_review(True)
             wait_for(lambda: window.cancel_event is None)
+            window.close()
+        files = os.listdir(out_dir)
+        with open(os.path.join(out_dir, files[0]), "rb") as f:
+            self.assertEqual(f.read().count(b"/Type /Page "), 2)
+
+    def test_blank_pages_start_unticked_in_review(self):
+        text = make_jpeg(test_page(413, 585, marks=[(100, 300, 200, 10, 20)]))
+        blank = make_jpeg(test_page(413, 585))
+        with FakeScanner(model="ES-580W", sheets=2, images=[text, blank]) as fake:
+            _app, window, out_dir = self.start_app(fake)
+            self.assertIn(window.settings.skip_blank, window.settings.rows())
+            window.settings.skip_blank.set_active(True)
+            self.assertTrue(window.settings.values()["skip_blank"])
+            window.settings.review.set_active(True)
+            window.on_scan()
+            wait_for(lambda: window.review is not None)
+            self.assertEqual([tile.kept() for tile in window.tiles], [True, False, True, False])
+            self.assertEqual(window.page_count.get_text(), "2 of 4 pages kept")
+            window.tiles[3].keep.set_active(True)  # keep this one after all
+            window.finish_review(True)
+            wait_for(lambda: window.cancel_event is None)
+            window.close()
+        files = os.listdir(out_dir)
+        with open(os.path.join(out_dir, files[0]), "rb") as f:
+            self.assertEqual(f.read().count(b"/Type /Page "), 3)
+
+    def test_blank_pages_removed_without_review(self):
+        text = make_jpeg(test_page(413, 585, marks=[(100, 300, 200, 10, 20)]))
+        blank = make_jpeg(test_page(413, 585))
+        with FakeScanner(model="ES-580W", sheets=2, images=[text, blank]) as fake:
+            _app, window, out_dir = self.start_app(fake)
+            window.settings.skip_blank.set_active(True)
+            window.on_scan()
+            wait_for(lambda: window.cancel_event is None)
+            self.assertEqual(window.page_count.get_text(), "2 of 4 pages kept")
+            self.assertIn("removed 2 blank pages", window.last_toast.get_title())
             window.close()
         files = os.listdir(out_dir)
         with open(os.path.join(out_dir, files[0]), "rb") as f:

@@ -6,6 +6,7 @@ configurable so tests can model specific devices, e.g. the real ES-580W.
 """
 
 import base64
+import math
 import re
 import socket
 import struct
@@ -35,12 +36,14 @@ def tiff_pixels(color, width=JPEG_SIZE[0], height=JPEG_SIZE[1]):
 
 
 def make_tiff(color, width=JPEG_SIZE[0], height=JPEG_SIZE[1], order="<",
-              photometric_bw=0, fill_order=1, rows_per_strip=5):
-    """Uncompressed single-page TIFF as a scanner sends it."""
+              photometric_bw=0, fill_order=1, rows_per_strip=5, pixels=None):
+    """Uncompressed single-page TIFF as a scanner sends it. `pixels`: packed
+    rows instead of the test pattern."""
     samples, bits = TIFF_LAYOUT[color]
     photometric = {"BlackAndWhite1": photometric_bw, "Grayscale8": 1, "RGB24": 2}[color]
     row = (width * samples * bits + 7) // 8
-    pixels = tiff_pixels(color, width, height)
+    if pixels is None:
+        pixels = tiff_pixels(color, width, height)
     if fill_order == 2:
         pixels = pixels.translate(REVERSE_BITS)
     strips = [pixels[y * row:(y + rows_per_strip) * row] for y in range(0, height, rows_per_strip)]
@@ -78,6 +81,158 @@ def make_tiff(color, width=JPEG_SIZE[0], height=JPEG_SIZE[1], order="<",
     out += b"\0\0\0\0"
     return bytes(out)
 
+
+
+# --- test pages and a minimal JPEG encoder -----------------------------------
+# For blank page detection: no JPEG encoder in the standard library, so this
+# writes baseline JPEGs itself (uniform quantizer, one fixed-length Huffman
+# table per class). Decoders such as libjpeg read them like any other JPEG.
+
+ZIGZAG = sorted(range(64), key=lambda i: (i // 8 + i % 8,
+                                          i // 8 if (i // 8 + i % 8) % 2 else i % 8))
+JPEG_QUANT = 16
+COS = [[(0.5 ** 0.5 if u == 0 else 1) * math.cos((2 * x + 1) * u * math.pi / 16) / 2
+        for x in range(8)] for u in range(8)]
+
+
+def test_page(width, height, paper=235, marks=(), noise=3):
+    """Gray page as rows: paper with block-wise noise, plus (x, y, w, h, value)
+    rectangles in pixels. Deterministic."""
+    rows = []
+    for y in range(height):
+        rows.append(bytearray(
+            max(0, min(255, paper + ((x // 8 * 7919 + y // 8 * 104729) % (2 * noise + 1)) - noise))
+            for x in range(width)))
+    for x0, y0, w, h, value in marks:
+        for y in range(max(0, y0), min(height, y0 + h)):
+            rows[y][max(0, x0):min(width, x0 + w)] = bytes([value]) * (min(width, x0 + w) - max(0, x0))
+    return rows
+
+
+def _fdct(block):
+    """Quantized coefficients of an 8x8 block (64 values, row by row)."""
+    if min(block) == max(block):  # flat: DC only
+        coeffs = [0] * 64
+        coeffs[0] = round((block[0] - 128) * 8 / JPEG_QUANT)
+        return coeffs
+    rows = [[sum(COS[u][x] * (block[y * 8 + x] - 128) for x in range(8)) for u in range(8)]
+            for y in range(8)]
+    return [round(sum(COS[v][y] * rows[y][u] for y in range(8)) / JPEG_QUANT)
+            for v in range(8) for u in range(8)]
+
+
+class _Bits:
+    def __init__(self):
+        self.out, self.acc, self.n = bytearray(), 0, 0
+
+    def put(self, value, length):
+        self.acc = (self.acc << length) | (value & ((1 << length) - 1))
+        self.n += length
+        while self.n >= 8:
+            self.n -= 8
+            byte = (self.acc >> self.n) & 0xFF
+            self.out.append(byte)
+            if byte == 0xFF:
+                self.out.append(0)
+        self.acc &= (1 << self.n) - 1
+
+    def flush(self):
+        if self.n:
+            self.put(0x7F, 8 - self.n)  # pad with 1 bits
+
+
+def _magnitude(value):
+    size = abs(value).bit_length()
+    return size, value if value >= 0 else value + (1 << size) - 1
+
+
+def make_jpeg(rows, color=False, restart=0, tint=(128, 128)):
+    """Baseline JPEG of gray rows: 1 component, or YCbCr 4:2:0 with constant
+    chroma `tint` (color). `restart`: restart interval in MCUs."""
+    height, width = len(rows), len(rows[0])
+    ac_symbols = [0x00, 0xF0] + [r << 4 | size for r in range(16) for size in range(1, 11)]
+    ac_code = {sym: i for i, sym in enumerate(ac_symbols)}  # all 8 bits long
+    bits = _Bits()
+
+    def block(x0, y0):  # edges repeat the last row/column
+        return [rows[min(height - 1, y0 + y)][min(width - 1, x0 + x)]
+                for y in range(8) for x in range(8)]
+
+    def encode(coeffs, comp, preds):
+        diff = coeffs[0] - preds[comp]
+        preds[comp] = coeffs[0]
+        size, value = _magnitude(diff)
+        bits.put(size, 4)  # DC codes: 4 bits each
+        if size:
+            bits.put(value, size)
+        run = 0
+        for k in ZIGZAG[1:]:
+            c = coeffs[k]
+            if c == 0:
+                run += 1
+                continue
+            while run > 15:
+                bits.put(ac_code[0xF0], 8)
+                run -= 16
+            size, value = _magnitude(c)
+            bits.put(ac_code[run << 4 | size], 8)
+            bits.put(value, size)
+            run = 0
+        if run:
+            bits.put(ac_code[0x00], 8)
+
+    if color:
+        mcus = [(mx * 16, my * 16) for my in range(-(-height // 16)) for mx in range(-(-width // 16))]
+    else:
+        mcus = [(mx * 8, my * 8) for my in range(-(-height // 8)) for mx in range(-(-width // 8))]
+    preds = [0, 0, 0]
+    data = bytearray()
+    for n, (x0, y0) in enumerate(mcus):
+        if restart and n and n % restart == 0:
+            bits.flush()
+            data += bits.out + bytes([0xFF, 0xD0 + (n // restart - 1) % 8])
+            bits.out = bytearray()
+            preds = [0, 0, 0]
+        if color:
+            for dy in (0, 8):
+                for dx in (0, 8):
+                    encode(_fdct(block(x0 + dx, y0 + dy)), 0, preds)
+            for comp, value in ((1, tint[0]), (2, tint[1])):
+                encode(_fdct([value] * 64), comp, preds)
+        else:
+            encode(_fdct(block(x0, y0)), 0, preds)
+    bits.flush()
+    data += bits.out
+
+    def segment(marker, payload):
+        return bytes([0xFF, marker]) + (len(payload) + 2).to_bytes(2, "big") + payload
+
+    comps = [(1, 0x22 if color else 0x11)] + ([(2, 0x11), (3, 0x11)] if color else [])
+    out = bytearray(b"\xff\xd8")
+    out += segment(0xDB, bytes([0]) + bytes([JPEG_QUANT]) * 64)
+    out += segment(0xC0, bytes([8]) + height.to_bytes(2, "big") + width.to_bytes(2, "big")
+                   + bytes([len(comps)]) + b"".join(bytes([c, hv, 0]) for c, hv in comps))
+    out += segment(0xC4, bytes([0x00]) + bytes([0, 0, 0, 12] + [0] * 12) + bytes(range(12)))
+    out += segment(0xC4, bytes([0x10]) + bytes([0] * 7 + [len(ac_symbols)] + [0] * 8)
+                   + bytes(ac_symbols))
+    if restart:
+        out += segment(0xDD, restart.to_bytes(2, "big"))
+    out += segment(0xDA, bytes([len(comps)]) + b"".join(bytes([c, 0]) for c, _hv in comps)
+                   + bytes([0, 63, 0]))
+    return bytes(out + data + b"\xff\xd9")
+
+
+def pack_bw(rows, threshold=128):
+    """1-bit rows (WhiteIsZero: 1 = black), as BlackAndWhite1 TIFF pixels."""
+    out = bytearray()
+    for row in rows:
+        for x in range(0, len(row), 8):
+            byte = 0
+            for bit, value in enumerate(row[x:x + 8]):
+                if value < threshold:
+                    byte |= 0x80 >> bit
+            out.append(byte)
+    return bytes(out)
 
 NSDECL = (
     'xmlns:soap="http://www.w3.org/2003/05/soap-envelope" '
@@ -165,6 +320,7 @@ class FakeScanner:
             "redirect_to": None,          # answer every SOAP request with a 302 there
             "endless": False,             # never run out of pages
             "image": None,                # bytes returned by RetrieveImage instead
+            "images": None,               # list of page images, used in turn
             "doctype": False,             # put a DTD into the Get response
         }
         unknown = set(config) - set(self.config)
@@ -420,7 +576,10 @@ class FakeScanner:
             return self._fault(h, "ClientErrorNoImagesAvailable")
         self._images_left = max(0, self._images_left - 1)
         self._images_sent += 1
-        if self.config["image"] is not None:
+        if self.config["images"]:
+            images = self.config["images"]
+            image = images[(self._images_sent - 1) % len(images)]
+        elif self.config["image"] is not None:
             image = self.config["image"]
         elif self._job_format == "tiff-single-uncompressed":
             image = make_tiff(self._job_color, **self.config["tiff"])
