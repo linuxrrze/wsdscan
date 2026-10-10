@@ -1084,6 +1084,37 @@ class ScanToFileTest(unittest.TestCase):
         self.assertEqual(events, [("connecting", 0), ("scanning", 0), ("page", 1), ("page", 2),
                                   ("page", 3), ("page", 4), ("saving", 4)])
 
+    def test_scan_more_into_the_same_document(self):
+        events, numbers, offered, failed = [], [], [], []
+        with tempfile.TemporaryDirectory() as d, FakeScanner(**ES580W_PROFILE, sheets=2) as fake:
+            out = os.path.join(d, "out.pdf")
+
+            def select(pages, infos):
+                offered.append(len(pages))
+                if len(offered) == 1:
+                    fake.config["sheets"] = 1
+                    return tool.SCAN_MORE
+                if len(offered) == 2:
+                    fake.config["sheets"] = 0  # an empty feeder: the pages so far stay
+                    return tool.SCAN_MORE
+                self.assertEqual(len(infos), len(pages))
+                return [0, 5]
+
+            pages, complete, _err = tool.scan_to_file(
+                args(host=fake.host, model=None), out,
+                on_progress=lambda event, n: events.append((event, n)),
+                on_page_image=lambda n, data, info: numbers.append(n), select_pages=select,
+                on_more_failed=failed.append)
+            with open(out, "rb") as f:
+                self.assertEqual(parse_pdf(f.read())["pages"], 2)
+        self.assertEqual((pages, complete), (2, True))
+        self.assertEqual(offered, [4, 6, 6])
+        self.assertEqual(numbers, [1, 2, 3, 4, 5, 6], "numbered on")
+        self.assertIn(("scanning", 4), events)
+        self.assertIn(("more_failed", 6), events)
+        self.assertEqual(len(failed), 1)
+        self.assertIsInstance(failed[0], tool.ScanError)
+
     def test_page_images_and_selection(self):
         images, offered = [], []
         with tempfile.TemporaryDirectory() as d, FakeScanner(**ES580W_PROFILE, sheets=2) as fake:

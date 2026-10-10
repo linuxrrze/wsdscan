@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GUI = os.path.dirname(HERE)
@@ -522,6 +523,9 @@ class GtkTest(unittest.TestCase):
             editor = tile.open_editor()
             view = editor.view
             wait_for(lambda: view.get_width() > 0)
+            # Everything fits the window's narrowest width (360).
+            self.assertLessEqual(editor.get_child().measure(Gtk.Orientation.HORIZONTAL, -1)[0],
+                                 360)
             self.assertAlmostEqual(editor.angle.get_value(), 3.5, delta=0.05, msg="prefilled")
             self.assertEqual(editor.state, wsdscan.manual_geometry(tile.info))
             # The red frame's right edge is where the page ends, and can be grabbed.
@@ -661,6 +665,37 @@ class GtkTest(unittest.TestCase):
         files = os.listdir(out_dir)
         self.assertEqual(len(files), 1)
         self.assertTrue(files[0].startswith("Fallback "))
+
+    def test_scan_more_pages_in_review(self):
+        with FakeScanner(model="ES-580W", sheets=2) as fake:
+            _app, window, out_dir = self.start_app(fake)
+            window.settings.review.set_active(True)
+            window.on_scan()
+            wait_for(lambda: window.review is not None)
+            self.assertTrue(window.scan_button.get_visible())
+            self.assertTrue(window.actions["scan"].get_enabled())
+            window.tiles[1].keep.set_active(False)
+            fake.config["sheets"] = 1
+            window.actions["scan"].activate(None)  # Scan again: more pages, same document
+            self.assertIsNone(window.review)
+            self.assertFalse(window.scan_button.get_visible())
+            wait_for(lambda: window.review is not None)
+            self.assertEqual([tile.number for tile in window.tiles], [1, 2, 3, 4, 5, 6])
+            self.assertEqual(window.page_count.get_text(), "5 of 6 pages kept")
+            fake.config["sheets"] = 0  # an empty feeder: the pages so far stay
+            with mock.patch.object(window, "show_error") as error:
+                window.on_scan()
+                wait_for(lambda: window.review is not None)
+            error.assert_called_once()
+            self.assertEqual(len(window.tiles), 6)
+            self.assertEqual(os.listdir(out_dir), [], "nothing saved before Save")
+            window.finish_review(True)
+            wait_for(lambda: window.cancel_event is None)
+            self.assertTrue(window.scan_button.has_css_class("suggested-action"))
+            window.close()
+        files = os.listdir(out_dir)
+        with open(os.path.join(out_dir, files[0]), "rb") as f:
+            self.assertEqual(f.read().count(b"/Type /Page "), 5)
 
     def test_review_discard_saves_nothing(self):
         with FakeScanner(model="ES-580W", sheets=1) as fake:

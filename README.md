@@ -319,7 +319,7 @@ IEEE 802.1X, also supported by the scanner, authenticates the scanner to the net
 
 `gui/` contains **Scan to PDF**, a GTK 4 / libadwaita desktop app for GNOME, KDE Plasma and Ubuntu, built on this tool:
 - **Scanners:** several scanners, each with its own settings, edited in its preferences.
-- **During a scan:** page preview with a counter, optional removal of blank pages, an optional review step to remove pages before saving and OCR, and OCR progress per page.
+- **During a scan:** page preview with a counter, optional removal of blank pages, an optional review step to remove pages before saving and OCR (and to scan more pages into the same document), and OCR progress per page.
 - **Desktop integration:** a status bar icon, start at login, desktop notifications and the desktop's own file dialogs.
 
 Install it with `gui/install.sh`, which also installs this tool as the `wsdscan` command. See [gui/README.md](gui/README.md).

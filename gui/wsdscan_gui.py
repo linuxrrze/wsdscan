@@ -603,7 +603,7 @@ class PageEditor(Adw.Dialog):
         self.angle = Gtk.SpinButton(
             adjustment=Gtk.Adjustment(lower=-self.ANGLE_LIMIT, upper=self.ANGLE_LIMIT,
                                       step_increment=0.1, page_increment=1),
-            digits=1, numeric=True, valign=Gtk.Align.CENTER,
+            digits=1, numeric=True, valign=Gtk.Align.CENTER, width_chars=6,
             tooltip_text=_("Straighten by this angle (clockwise tilt in the scan)"))
         self.angle.set_value(self.state[4])
         self.angle.connect("value-changed", self._angle_changed)
@@ -616,16 +616,20 @@ class PageEditor(Adw.Dialog):
         turn_right.connect("clicked", lambda *_a: self.turn_by(90))
         reset = Gtk.Button(label=_("Automatic"), tooltip_text=_("Back to the values found"))
         reset.connect("clicked", lambda *_a: self.reset())
-        tools = Gtk.Box(spacing=6, margin_start=12, margin_end=12, margin_top=6,
-                        margin_bottom=12)
-        tools.append(Gtk.Label(label=_("Angle")))
-        tools.append(self.angle)
-        tools.append(Gtk.Label(label="°"))
-        tools.append(turn_left)
-        tools.append(turn_right)
-        tools.append(Gtk.Box(hexpand=True))
-        tools.append(self.size_label)
-        tools.append(reset)
+        # Two rows, so that all of it fits a narrow window.
+        angle_row = Gtk.Box(spacing=6)
+        for widget in (Gtk.Label(label=_("Angle")), self.angle, Gtk.Label(label="°"),
+                       Gtk.Box(hexpand=True), turn_left, turn_right):
+            angle_row.append(widget)
+        self.size_label.set_hexpand(True)
+        self.size_label.set_xalign(0)
+        size_row = Gtk.Box(spacing=6)
+        size_row.append(self.size_label)
+        size_row.append(reset)
+        tools = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin_start=12,
+                        margin_end=12, margin_top=6, margin_bottom=12)
+        tools.append(angle_row)
+        tools.append(size_row)
         hint = Gtk.Label(label=_("Drag the red frame's edges to set the page, or the frame to "
                                  "move it."), wrap=True, css_classes=["dim-label"],
                          margin_start=12, margin_end=12, margin_top=6)
@@ -940,6 +944,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.ocr_total = 0
         self.blank_pages = 0    # found blank in the current scan
         self.scan_reviewed = False
+        self.closing = False
         self.review_open = False  # page corrections can be switched (review, before saving)
         self.scan_dpi = 300
         self.page_count = Gtk.Label(css_classes=["dim-label"])
@@ -1006,6 +1011,7 @@ class MainWindow(Adw.ApplicationWindow):
         if self.app.tray_active():
             self.set_visible(False)  # keep running in the status bar
             return True
+        self.closing = True
         if self.cancel_event:
             self.cancel_event.set()
         if self.review:
@@ -1109,6 +1115,7 @@ class MainWindow(Adw.ApplicationWindow):
         # File name and folder stay editable: they are read only when saving.
         # The scan settings row is locked through its action.
         self.scan_button.set_visible(not busy)
+        self.scan_button.add_css_class("suggested-action")  # (not while reviewing)
         self.cancel_button.set_visible(busy)
         self.actions["scan"].set_enabled(not busy)
         self.actions["reconnect"].set_enabled(not busy)
@@ -1151,6 +1158,10 @@ class MainWindow(Adw.ApplicationWindow):
             tile.set_review(True)
         self.cancel_button.set_visible(False)
         self.review_bar.set_visible(True)
+        # Scan adds pages from another feeder load to the same document.
+        self.scan_button.remove_css_class("suggested-action")
+        self.scan_button.set_visible(True)
+        self.actions["scan"].set_enabled(True)
         self.update_page_count()
         self.set_progress(scanform.progress_text("review", len(self.tiles)))
         if not self.is_visible():
@@ -1169,11 +1180,46 @@ class MainWindow(Adw.ApplicationWindow):
             tile.set_review(False)
             tile.set_corrections_editable(False)
         self.review_bar.set_visible(False)
+        self.end_scan_more()
         self.cancel_button.set_visible(True)
         event.set()
 
+    def scan_more(self):
+        """Scan in the review step: scan the feeder again into the same
+        document (the scan thread waits in select_pages)."""
+        event, result = self.review
+        self.review = None
+        result["keep"] = wsdscan.SCAN_MORE
+        for tile in self.tiles:
+            tile.set_review(False)  # back with the review
+        self.review_bar.set_visible(False)
+        self.end_scan_more()
+        self.cancel_button.set_visible(True)
+        self.cancel_button.set_sensitive(True)
+        self.set_progress(scanform.progress_text("scanning", 0))
+        event.set()
+
+    def end_scan_more(self):
+        self.scan_button.set_visible(False)
+        self.scan_button.add_css_class("suggested-action")
+        self.actions["scan"].set_enabled(False)
+
+    def more_failed(self, error):
+        """Scanning more pages failed or was cancelled: the pages before stay."""
+        if isinstance(error, wsdscan.ScanCancelled):
+            self.toasts.add_toast(Adw.Toast(use_markup=False, title=_(
+                "Scan cancelled; the pages scanned before are kept")))
+        else:
+            self.show_error(str(error))
+
     def on_progress(self, event, pages):
         """Scan progress in the main loop: counter, OCR state per page."""
+        if event == "more_failed":  # pages of the failed scan are not kept
+            for tile in self.tiles[pages:]:
+                self.page_grid.remove(tile)
+            del self.tiles[pages:]
+            self.update_page_count()
+            return
         if event == "blank":
             self.blank_pages += 1
             return  # the tile shows it; keep the progress text
@@ -1201,6 +1247,9 @@ class MainWindow(Adw.ApplicationWindow):
     # --- scanning -----------------------------------------------------------
 
     def on_scan(self, *_args):
+        if self.review:
+            self.scan_more()
+            return
         if self.cancel_event:
             return
         if not self.name_row.get_text().strip():
@@ -1263,11 +1312,17 @@ class MainWindow(Adw.ApplicationWindow):
             saved["out"] = out
             return out
 
+        def more_failed(error):
+            """In the scan thread, before the review comes back."""
+            if not self.closing:
+                cancel.clear()  # cancelled the added scan only
+            in_main_thread(self.more_failed, error)
+
         def work():
             pages, complete, ocr_error = wsdscan.scan_to_file(
                 args, output_path, device=self.device, on_progress=progress,
                 should_stop=cancel.is_set, on_page_image=page_image,
-                select_pages=select_pages if review else None)
+                select_pages=select_pages if review else None, on_more_failed=more_failed)
             return saved["out"], pages, complete, ocr_error
 
         run_in_thread(work, self._scan_done, self._scan_failed)

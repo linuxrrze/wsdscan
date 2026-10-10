@@ -58,12 +58,13 @@ tar -xzf scan-to-pdf-<version>.tar.gz && cd scan-to-pdf-<version> && ./install.s
    File name and folder stay editable while scanning: they are only used when the PDF is saved, after the last page (or when you click **Save** in the review step). An empty file name falls back to the default name.
 5. With **Review pages before saving** switched on (Scan settings; default off, i.e. every page is processed), the app pauses after the last page:
    - Untick the pages you don't want, then click **Save** (or press Enter in the file name). You can still change the file name and folder now.
+   - **Scan** adds more pages to the same document: load the next stack into the feeder and click **Scan** again, as often as you like. The new pages are numbered on, and nothing is saved until you click **Save**. They are scanned with the same settings; to change the settings, save first. If that scan fails (e.g. an empty feeder) or you cancel it, the pages scanned before stay.
    - With **Remove blank pages** on, blank pages already start unticked; tick one to keep it after all.
    - Each correction made to a page shows as an icon on its thumbnail: cut to the sheet (paper size **Automatic**), straightened, turned upright. Click an icon to switch that correction off for this page (the thumbnail shows the result), and again to switch it back on. The tooltip says what was done, e.g. "Straightened by 3.4°". This works until you click **Save**; also while the pages are still being scanned.
    - **Double-click a page** to adjust it in detail. The editor shows the whole scan, already straightened and turned as the page will be, with the page as a red frame:
      - Drag an edge (or a corner) of the frame to move it; drag inside the frame to move the whole frame. It stays within the scan, at least 1 cm in size.
      - **Angle** straightens by any angle (−180° to 180°), prefilled with the angle found; the frame keeps its size and middle. The two arrow buttons turn by 90°.
-     - **Automatic** goes back to the values found; **Apply** takes the settings, **Cancel** drops them.
+     - **Automatic** goes back to the values found; **Apply** takes the settings, **Cancel** drops them. The controls take two rows, so that all of them fit a narrow window.
      
      After **Apply**, the thumbnail shows the adjusted page and one icon, "adjusted by hand", stands for it in place of the cut and straighten icons; click it to switch back to the automatic corrections. The PDF is saved like that, and text recognition follows it. Like the icons, this works until you click **Save**.
    - To turn a page by hand, use the two buttons at the top left of its thumbnail: **Turn left** and **Turn right** (90° each). This comes on top of the corrections, e.g. for a page that **Turn pages upright** couldn't judge, and also works without that switch.

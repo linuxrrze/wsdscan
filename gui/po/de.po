@@ -844,8 +844,11 @@ msgid "Recognizing text: page {n} of {total}"
 msgstr "Text wird erkannt: Seite {n} von {total}"
 
 #: scanform.py:434
-msgid "Untick the pages you don’t want, then click Save. You can still change the file name and folder."
-msgstr "Entfernen Sie den Haken bei unerwünschten Seiten und klicken Sie dann auf „Speichern“. Dateiname und Ordner lassen sich noch ändern."
+msgid "Untick the pages you don’t want, then click Save. Scan adds more pages. You can still change the file name and folder."
+msgstr "Entfernen Sie den Haken bei unerwünschten Seiten und klicken Sie dann auf „Speichern“. „Scannen“ fügt weitere Seiten hinzu. Dateiname und Ordner lassen sich noch ändern."
+
+msgid "Scan cancelled; the pages scanned before are kept"
+msgstr "Scan abgebrochen; die zuvor gescannten Seiten bleiben erhalten"
 
 #: scanform.py:442
 msgid "{n} page"

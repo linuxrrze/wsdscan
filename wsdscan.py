@@ -905,8 +905,12 @@ def scan(service, args, caps, on_page=None, should_stop=None):
     return pages, dpi, complete
 
 
+SCAN_MORE = "more"  # select_pages(): scan more pages into the same document
+
+
 def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
-                 on_page_image=None, select_pages=None, overwrite=False):
+                 on_page_image=None, select_pages=None, overwrite=False,
+                 on_more_failed=None):
     """Find the scanner (unless given), check the settings, scan, write the PDF,
     and run text recognition if args.ocr is set.
 
@@ -926,6 +930,11 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
     (in order); None discards the scan. It may also switch corrections off
     in an info's "use". Called after scanning, before saving/OCR. Without it,
     blank pages are removed (args.skip_blank) unless all pages are blank.
+    It may also return SCAN_MORE: the feeder is scanned again with the same
+    settings, its pages are added (numbered on), and select_pages is asked
+    again with all of them. If that scan fails or is stopped, the pages
+    before it stay: on_progress("more_failed", n) with the pages kept and
+    on_more_failed(error) are called, then select_pages again.
     `out` is the PDF path, or a function returning it: then it is called
     right before saving, so the name and folder can still change while
     scanning and during page selection.
@@ -967,6 +976,22 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
                                     should_stop=should_stop)
     if select_pages:
         keep = select_pages(pages, infos)
+        while keep is SCAN_MORE:
+            first = len(pages)
+            report("scanning", first)
+            try:
+                more, _dpi, done = run_scan(
+                    device, args, caps, should_stop=should_stop,
+                    on_page=lambda n, image: page_done(first + n, image))
+            except ScanError as e:  # also stopped: keep what was scanned before
+                del infos[first:]
+                report("more_failed", first)
+                if on_more_failed:
+                    on_more_failed(e)
+            else:
+                pages = pages + more
+                complete = complete and done
+            keep = select_pages(pages, infos)
         if keep is None:
             raise ScanCancelled("scan discarded")
         if not keep:
