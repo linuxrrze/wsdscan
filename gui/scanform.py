@@ -29,6 +29,8 @@ SOURCES = [("duplex", _("Both sides")), ("adf", _("One side"))]
 MODES = [("color", _("Color")), ("gray", _("Grayscale")), ("bw", _("Black & white"))]
 PAPERS = [("auto", _("Automatic")), ("a4", "A4"), ("a5", "A5"), ("letter", "Letter"),
           ("legal", "Legal")]
+# Paper size "auto": which of the sheet's edges are cut (wsdscan.CROP_CHOICES).
+CROPS = [("sides", _("Left and right")), ("all", _("All sides"))]
 OCR_ENGINES = [("auto", _("Automatic")), ("ocrmypdf", "OCRmyPDF"), ("tesseract", "Tesseract")]
 DEFAULT_RESOLUTIONS = [100, 150, 200, 300, 600]
 
@@ -215,6 +217,8 @@ def settings_summary(values, review=False):
              dict(MODES).get(values["mode"], values["mode"]),
              f"{values['resolution']} dpi",
              dict(PAPERS).get(values["paper"], values["paper"])]
+    if values["paper"] == "auto" and values.get("crop") == "all":
+        parts.append(_("cut on all sides"))
     if values.get("lossless") and values["mode"] != "bw":  # b/w is always lossless
         parts.append(_("lossless"))
     if values.get("brightness") is not None:
@@ -323,6 +327,7 @@ def scan_args(values):
         ocr_lang=values.get("ocr_lang") or None,
         skip_blank=bool(values.get("skip_blank")),
         deskew=bool(values.get("deskew")),
+        crop=values.get("crop") or "sides",
         auto_rotate=bool(values.get("auto_rotate")),
     )
 
@@ -336,7 +341,7 @@ TURN_ICONS = {-90: "wsdscan-turn-left-symbolic", 90: "wsdscan-turn-right-symboli
 def correction_tooltip(name, info, dpi, applied):
     """Tooltip of a page's correction icon, e.g. 'Straightened by 3.4°'."""
     if name == "crop":
-        _cx, _cy, width, height, _angle = info["paper"]
+        width, height = wsdscan.crop_size(info)
         text = _("Cut to the sheet: {w} × {h} mm").format(
             w=round(width / dpi * 25.4), h=round(height / dpi * 25.4))
     elif name == "skew":

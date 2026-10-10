@@ -120,14 +120,16 @@ def render_scan(pixels, angle, upside_down):
     backing.parse("#b3b7bb")
     padding.parse("#ffffff")
     snapshot.append_color(backing, area)
+    # A sheet-fed scanner starts at the sheet's first corner and pads from
+    # just after its last one.
+    a = math.radians(abs(angle))
+    half_h = (PAGE_H * math.cos(a) + PAGE_W * math.sin(a)) / 2
     snapshot.save()
-    snapshot.translate(Graphene.Point().init(SCAN_W / 2, PAGE_H / 2 + 30))
+    snapshot.translate(Graphene.Point().init(SCAN_W / 2, half_h))
     snapshot.rotate(angle + (180 if upside_down else 0))
     snapshot.append_texture(page, Graphene.Rect().init(-PAGE_W / 2, -PAGE_H / 2, PAGE_W, PAGE_H))
     snapshot.restore()
-    # The scanner pads from just after the sheet's lowest corner.
-    a = math.radians(abs(angle))
-    end = PAGE_H / 2 + 30 + (PAGE_H * math.cos(a) + PAGE_W * math.sin(a)) / 2 + 4
+    end = 2 * half_h + 4
     snapshot.append_color(padding, Graphene.Rect().init(0, end, SCAN_W, SCAN_H - end))
     renderer = Gsk.CairoRenderer()
     renderer.realize_for_display(Gdk.Display.get_default())

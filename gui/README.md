@@ -49,7 +49,7 @@ tar -xzf scan-to-pdf-<version>.tar.gz && cd scan-to-pdf-<version> && ./install.s
 1. Put the pages in the scanner's document feeder.
 2. Open **Scan to PDF**. It connects to your scanner and shows it at the top. With several scanners configured, choose one in the **Scanner** selector; the app starts with the one used last. Without any configured, it uses the one it finds on the network.
 3. Check the file name and folder. The **Scan settings** row shows the current settings, e.g. "Both sides · Color · 300 dpi · A4". Click it (or press Ctrl+E) to change them in a separate dialog:
-   - The dialog has sides, color, resolution, paper size (including **Automatic**), lossless, brightness/contrast, **Recognize text (OCR)**, **Remove blank pages**, **Straighten pages**, **Turn pages upright** and **Review pages before saving**. It only offers what your scanner supports.
+   - The dialog has sides, color, resolution, paper size (including **Automatic**, with **Cut to the sheet**: **Left and right** by default, or **All sides**), lossless, brightness/contrast, **Recognize text (OCR)**, **Remove blank pages**, **Straighten pages**, **Turn pages upright** and **Review pages before saving**. It only offers what your scanner supports.
    - Changes apply to the next scans.
    - **Save for This Scanner** keeps them as the scanner's settings, also for `wsdscan --scanner NAME`. Without a configured scanner the button is **Save as Defaults**.
    - **Reset to Defaults** goes back to the saved settings.
@@ -188,6 +188,7 @@ last_scanner = Office color
 | `ocr_engine` | `auto`, `ocrmypdf`, `tesseract` | `auto` prefers OCRmyPDF |
 | `ocr_lang` | e.g. `deu+eng`, or empty | empty = automatic: all installed languages (system language and English first); only those two if more than 4 are installed |
 | `skip_blank` | `true`, `false` | remove blank pages (`--skip-blank`); in the app's review step they start unticked |
+| `crop` | `sides`, `all` | paper `auto`: cut only the sheet's left and right edges (the scanner finds start and end), or all four (`--crop`) |
 | `deskew` | `true`, `false` | straighten pages fed in crooked (`--deskew`) |
 | `auto_rotate` | `true`, `false` | turn pages upright (`--auto-rotate`); needs Tesseract with orientation data |
 | `review_pages` | `true`, `false` | app only: review the pages before saving and OCR; the command ignores it |

@@ -1523,6 +1523,7 @@ UNIFORM_ROW = 16  # brightness range of a row without a sheet edge (e.g. backing
 # too little text (or handwriting) give none and stay as they are.
 OSD_MIN_CONFIDENCE = 4.0
 OSD_TIMEOUT = 60
+CROP_CHOICES = ("sides", "all")  # cut the sheet's left and right edges, or all four
 CORRECTIONS = ("crop", "skew", "rotate")  # page_layout() applies the ones in info["use"]
 
 
@@ -1596,6 +1597,29 @@ def _min_area_rect(hull):
     return cx, cy, width, height, angle
 
 
+def scanned_rows(columns, rows, values):
+    """Grid rows up to the padding after the sheet: some scanners fill the
+    rest of the scan length with rows of one color once the sheet has gone
+    through. All rows if there is none, or it is the paper's color (black &
+    white: cannot tell)."""
+    def row(r):
+        return values[r * columns:(r + 1) * columns]
+
+    def spread(r):
+        return max(row(r)) - min(row(r))
+
+    end = rows
+    if rows and columns and spread(rows - 1) <= PAD_FLAT:
+        pad = sum(row(rows - 1)) / columns
+        while (end > 0 and spread(end - 1) <= PAD_FLAT
+               and abs(sum(row(end - 1)) / columns - pad) <= PAD_FLAT):
+            end -= 1
+        above = sorted(values[:end * columns])
+        if above and abs(above[int(len(above) * 0.9)] - pad) <= 2 * PAD_FLAT:
+            end = rows
+    return end
+
+
 def find_paper(columns, rows, values):
     """The scanned sheet on a block grid: (cx, cy, width, height, angle) in
     blocks, angle in degrees (clockwise on screen), or None if no sheet stands
@@ -1608,15 +1632,7 @@ def find_paper(columns, rows, values):
     def spread(r):
         return max(row(r)) - min(row(r))
 
-    first, end = 0, rows
-    if rows and columns and spread(rows - 1) <= PAD_FLAT:
-        pad = sum(row(rows - 1)) / columns
-        while (end > 0 and spread(end - 1) <= PAD_FLAT
-               and abs(sum(row(end - 1)) / columns - pad) <= PAD_FLAT):
-            end -= 1
-        above = sorted(values[:end * columns])
-        if above and abs(above[int(len(above) * 0.9)] - pad) <= 2 * PAD_FLAT:
-            end = rows  # padding the color of the paper (black & white): cannot tell
+    first, end = 0, scanned_rows(columns, rows, values)
     if end - first < 4 or columns < 4:
         return None
     trimmed = (columns / 2, end / 2, columns, end, 0.0) if end < rows else None
@@ -1632,10 +1648,12 @@ def find_paper(columns, rows, values):
     def coverage(v):  # share of a block covered by paper, from its brightness
         return min(1.0, max(0.0, (v - backing) / (paper - backing)))
 
-    lit = [[v > threshold for v in row(r)] if first <= r < end and spread(r) > UNIFORM_ROW
+    # The last row before the padding blends into it (no edges from there).
+    edge_end = end - 1 if end < rows else end
+    lit = [[v > threshold for v in row(r)] if first <= r < edge_end and spread(r) > UNIFORM_ROW
            else [False] * columns for r in range(rows)]
     points = []
-    for r in range(first, end):  # left and right edge in each row
+    for r in range(first, edge_end):  # left and right edge in each row
         cells = lit[r]
         hits = [c for c in range(columns - 1) if cells[c] and cells[c + 1]]
         if not hits:
@@ -1735,6 +1753,10 @@ def analyze_page(image, args, dpi, osd=None):
       blank   True if the page is empty paper (args.skip_blank)
       paper   (cx, cy, width, height, angle) of the sheet in pixels, or None
       crop    True if the page can be cut to the sheet (paper "auto")
+      crop_edges  "sides": cut left and right only, the scanned length stays
+              (the scanner finds the sheet's start and end); "all": all four.
+              A straightened page is always cut to the sheet's four edges.
+      length  rows of the scan up to the padding after the sheet (pixels)
       skew    degrees to straighten (args.deskew), else 0
       rotate  clockwise degrees to turn it upright (args.auto_rotate), else 0
       orientation  the same, detected also without args.auto_rotate (only
@@ -1744,16 +1766,20 @@ def analyze_page(image, args, dpi, osd=None):
               top of the corrections; 0, may be changed (the app's review)
     osd: Tesseract path for orientation detection (None: not wanted).
     """
-    info = {"size": (0, 0), "blank": False, "paper": None, "crop": False, "skew": 0.0,
+    info = {"size": (0, 0), "blank": False, "paper": None, "crop": False,
+            "crop_edges": getattr(args, "crop", "sides") or "sides", "length": 0, "skew": 0.0,
             "rotate": 0, "use": {name: True for name in CORRECTIONS}, "turn": 0}
     try:
         info["size"] = image_size(image)
     except ScanError:
         return info
+    info["length"] = info["size"][1]
     auto = getattr(args, "paper", "") == "auto"
     deskew = bool(getattr(args, "deskew", False))
     grid = page_grid(image, limit_jpeg_bits=not (auto or deskew))
     rect = find_paper(*grid) if grid and (auto or deskew) else None
+    if grid and (auto or deskew):
+        info["length"] = min(info["size"][1], scanned_rows(*grid) * BLOCK)
     if rect:
         info["paper"] = sheet_in_pixels(rect, info["size"], dpi)
         angle = rect[4]
@@ -1800,12 +1826,16 @@ def page_geometry(info):
     skew = info["skew"] if use.get("skew") else 0.0
     if info["crop"] and use.get("crop") and info["paper"]:
         cx, cy, w, h, angle = info["paper"]
+        # Straightened, the page is the sheet: the scan's first and last rows
+        # are tilted against it (crop_edges "sides" would leave wedges of backing).
         if not skew:  # cut to the sheet without turning it: its upright box, in the image
             a = math.radians(angle)
             half_w = (w * abs(math.cos(a)) + h * abs(math.sin(a))) / 2
             half_h = (w * abs(math.sin(a)) + h * abs(math.cos(a))) / 2
             x0, x1 = max(0, cx - half_w), min(width, cx + half_w)
             y0, y1 = max(0, cy - half_h), min(height, cy + half_h)
+            if info.get("crop_edges", "all") == "sides":  # as scanned, without the padding
+                y0, y1 = 0, info.get("length") or height
             cx, cy, w, h = (x0 + x1) / 2, (y0 + y1) / 2, max(1, x1 - x0), max(1, y1 - y0)
     else:
         cx, cy, w, h = width / 2, height / 2, width, height
@@ -1819,6 +1849,14 @@ def page_turn(info):
     (if used) plus by hand."""
     rotate = info["rotate"] if info["use"].get("rotate") else 0
     return (rotate + info.get("turn", 0)) % 360
+
+
+def crop_size(info):
+    """(width, height) in pixels of the part of the scan the page is cut
+    to (crop on, before turning)."""
+    page_w, page_h = page_geometry(dict(info, use=dict(info["use"], crop=True, rotate=False),
+                                        turn=0))[:2]
+    return page_w, page_h
 
 
 def corrections_done(info):
@@ -2297,6 +2335,7 @@ CONFIG_DEFAULTS = {
     "skip_blank": False,  # remove blank pages
     "deskew": False,  # straighten pages that were fed crooked
     "auto_rotate": False,  # turn pages upright (Tesseract orientation detection)
+    "crop": "sides",  # paper "auto": cut the sheet's left and right edges, or "all" four
 }
 SCANNER_SECTION = "scanner "  # profiles: [scanner Office], [scanner Home], ...
 CONFIG_CHOICES = {
@@ -2304,6 +2343,7 @@ CONFIG_CHOICES = {
     "source": ("adf", "duplex"),
     "mode": tuple(COLOR_ENTRIES),
     "paper": tuple(PAPER_SIZES),
+    "crop": CROP_CHOICES,
 }
 CONFIG_HEADER = ("# wsdscan settings, shared by the wsdscan command and the Scan to PDF app.\n"
                  "# [scan] holds the defaults, [scanner NAME] sections configure scanners\n"
@@ -2588,6 +2628,11 @@ def parse_args(argv=None):
     p.add_argument("-p", "--paper", choices=tuple(PAPER_SIZES), default=cfg["paper"],
                    help="paper size; auto scans the whole scan area and cuts each page "
                         "to its sheet (default: %(default)s)")
+    p.add_argument("--crop", choices=CROP_CHOICES, default=cfg["crop"],
+                   help="with --paper auto: cut the sheet's left and right edges only and "
+                        "keep the scanned length, as the scanner finds the sheet's start "
+                        "and end (sides), or cut all four edges (all); straightened pages "
+                        "are cut to all four (default: %(default)s)")
     p.add_argument("-i", "--info", action="store_true",
                    help="show scanner capabilities and status, then exit")
     p.add_argument("-c", "--check", action="store_true",
@@ -2665,7 +2710,7 @@ def main(argv=None):
     def page_image(n, image, info):
         done = []
         if info["crop"] and info["paper"]:
-            _cx, _cy, w, h, _a = info["paper"]
+            w, h = crop_size(info)
             done.append(f"{w / args.resolution * 25.4:.0f} x {h / args.resolution * 25.4:.0f} mm")
         if info["skew"]:
             done.append(f"straightened by {abs(info['skew']):.1f}°")

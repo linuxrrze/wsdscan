@@ -413,6 +413,8 @@ class GtkTest(unittest.TestCase):
             _app, window, out_dir = self.start_app(fake, paper="auto", deskew=True,
                                                    review_pages=True, source="duplex")
             self.assertEqual(window.settings.paper.get_value(), "auto")
+            self.assertTrue(window.settings.crop.get_visible())
+            self.assertEqual(window.settings.values()["crop"], "sides")
             self.assertTrue(window.settings.values()["deskew"])
             window.on_scan()
             wait_for(lambda: window.review is not None)

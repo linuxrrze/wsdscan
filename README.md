@@ -65,6 +65,7 @@ Defaults below are the built-in ones; the [config file](#configuration-file) can
 | `-c/--check` | | test mode: `--info` plus scanner-side validation of every setting combination; no scan |
 | `--ocr` / `--no-ocr` | off | recognize text so the PDF is searchable (see below) |
 | `--skip-blank` / `--no-skip-blank` | off | remove blank pages, e.g. empty backs in a duplex scan (see below) |
+| `--crop` | `sides` | with `-p auto`: `sides` cuts only the sheet's left and right edges, `all` all four (see below) |
 | `--deskew` / `--no-deskew` | off | straighten pages that were fed in crooked (see below) |
 | `--auto-rotate` / `--no-auto-rotate` | off | turn pages that are sideways or upside down upright; needs Tesseract with orientation data |
 | `--ocr-engine` | `auto` | `auto` (OCRmyPDF if installed, else Tesseract), `ocrmypdf`, `tesseract` |
@@ -114,6 +115,7 @@ With `--skip-blank`, pages without content are left out of the PDF, e.g. the emp
 Many scanners can find the paper size themselves, but not over WSD (the ES-580W rejects it there), so this tool does it on the scanned image, for any scanner:
 
 - **`--paper auto`** scans the scanner's whole scan area and cuts each page to its sheet: receipts, A5 and A4 can be mixed in one stack. The sheet is found because it is brighter than the feeder's backing (gray or black on most document feeders); a stretch of one color after the sheet (the ES-580W fills the rest of the length with white) is cut off too. With a white backing, or in black & white (where the backing turns white), the sheet can't be told apart: then the page keeps the full size.
+- **`--crop sides`** (the default) cuts only the sheet's left and right edges. A sheet-fed scanner finds where a sheet starts and ends itself, so the page keeps the length as scanned (without the padding after it); nothing at the top or bottom is cut by guesswork. **`--crop all`** cuts all four edges to the sheet. A straightened page is always cut on all four: the scan's first and last lines are tilted against the straightened sheet and would leave wedges of feeder backing in the corners.
 - **`--deskew`** straightens pages that were fed in crooked (up to 20°), from the sheet's edges. It needs the sheet's edges in the image, so it works best with `--paper auto`.
 - **`--auto-rotate`** turns pages that are sideways or upside down upright. It uses Tesseract's orientation detection (packages `tesseract-ocr` and `tesseract-ocr-osd`), about a second per page while the next one is scanned. Pages with too little printed text, e.g. handwriting, stay as they are.
 - **The scans themselves are not changed:** each image is embedded as the scanner sent it, and the PDF places, turns and cuts it to the page. Nothing is re-compressed, and the text from `--ocr` lines up with the corrected page.

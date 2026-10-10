@@ -141,7 +141,9 @@ class ScannerProblemTest(unittest.TestCase):
 
 
 class PageCorrectionTextTest(unittest.TestCase):
-    INFO = {"paper": (500, 700, 1240, 1748, 3.4), "skew": -3.37, "rotate": 270}
+    INFO = {"size": (2544, 4640), "paper": (500, 700, 1240, 1748, 3.4), "crop": True,
+            "crop_edges": "sides", "length": 1800, "skew": -3.37, "rotate": 270,
+            "use": {"crop": True, "skew": True, "rotate": False}}
 
     def test_page_icons_shipped(self):
         # Icon themes differ (newer Adwaita dropped e.g. object-rotate-left):
@@ -149,6 +151,12 @@ class PageCorrectionTextTest(unittest.TestCase):
         for name in list(scanform.CORRECTION_ICONS.values()) + list(scanform.TURN_ICONS.values()):
             with self.subTest(icon=name):
                 self.assertTrue(os.path.isfile(os.path.join(GUI, "data", "icons", f"{name}.svg")))
+
+    def test_crop_tooltip_not_straightened(self):
+        # Left and right cut only: the scanned length, without the padding.
+        info = dict(self.INFO, use={"crop": True, "skew": False, "rotate": False})
+        self.assertRegex(scanform.correction_tooltip("crop", info, 300, True),
+                         r"^Cut to the sheet: \d+ × 152 mm$")
 
     def test_tooltips(self):
         self.assertEqual(scanform.correction_tooltip("crop", self.INFO, 300, True),
@@ -163,7 +171,13 @@ class PageCorrectionTextTest(unittest.TestCase):
         self.assertEqual(scanform.settings_summary(values),
                          "Both sides · Color · 300 dpi · Automatic · straighten · turn upright")
         a = scanform.scan_args(values)
-        self.assertEqual((a.paper, a.deskew, a.auto_rotate), ("auto", True, True))
+        self.assertEqual((a.paper, a.deskew, a.auto_rotate, a.crop), ("auto", True, True, "sides"))
+        values["crop"] = "all"
+        self.assertEqual(scanform.settings_summary(values).split(" · ")[3:5],
+                         ["Automatic", "cut on all sides"])
+        self.assertEqual(scanform.settings_summary(dict(values, paper="a4")).split(" · ")[3:5],
+                         ["A4", "straighten"], "only with the automatic paper size")
+        self.assertEqual([v for v, _label in scanform.CROPS], list(wsdscan.CROP_CHOICES))
         self.assertEqual(scanform.PAPERS[0], ("auto", "Automatic"))
         self.assertEqual(set(scanform.CORRECTION_ICONS), set(wsdscan.CORRECTIONS))
 

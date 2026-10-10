@@ -547,7 +547,7 @@ def sheet_scan(sheet=SHEET, marks=SHEET_TEXT, **opts):
 
 
 def corrected(**overrides):
-    return args(paper="auto", deskew=True, **overrides)
+    return args(**dict({"paper": "auto", "deskew": True, "crop": "all"}, **overrides))
 
 
 class PageCorrectionTest(unittest.TestCase):
@@ -637,6 +637,38 @@ class PageCorrectionTest(unittest.TestCase):
         page_w, page_h, place = tool.page_layout(info)
         self.assertEqual((page_w, page_h), AREA)
         self.assertNotAlmostEqual(place(100, 0)[1], place(0, 0)[1])
+
+    def test_sides_cut_keeps_scanned_length(self):
+        """Default: only the sheet's left and right edges are cut; the length
+        is as scanned, up to the padding after the sheet."""
+        self.assertEqual(tool.CONFIG_DEFAULTS["crop"], "sides")
+        info = tool.analyze_page(sheet_scan(), corrected(crop="sides", deskew=False), 75)
+        self.assertEqual((info["crop_edges"], info["length"]), ("sides", 720))
+        _cx, _cy, w, h, _angle = info["paper"]
+        page_w, page_h, place = tool.page_layout(info)
+        self.assertGreater(page_w, w, "the tilted sheet's upright box")
+        self.assertEqual(page_h, 720)
+        self.assertEqual(place(0, 0)[1], 0)
+        self.assertEqual(tool.crop_size(info), (page_w, page_h))
+        full = tool.analyze_page(sheet_scan(), corrected(crop="all", deskew=False), 75)
+        self.assertEqual(tool.page_layout(full)[0], page_w)
+        self.assertLess(tool.page_layout(full)[1], 700)
+        # Straightened: the sheet, as the scan's start and end are tilted against it.
+        straight = tool.analyze_page(sheet_scan(), corrected(crop="sides"), 75)
+        self.assertEqual(tool.page_layout(straight)[:2], (w, h))
+
+    def test_sides_cut_of_sheet_scanned_from_its_start(self):
+        # As a sheet-fed scanner delivers it: the scan starts and ends with the sheet.
+        sheet = (300, 310, 438, 620, 0)
+        info = tool.analyze_page(sheet_scan(sheet, pad_from=620), args(paper="auto"), 75)
+        page_w, page_h, _place = tool.page_layout(info)
+        self.assertAlmostEqual(page_w, 438, delta=6)
+        self.assertAlmostEqual(page_h, 620, delta=tool.BLOCK)  # to the block the padding starts in
+
+    def test_crop_option(self):
+        self.assertEqual(tool.parse_config_value("crop", "all"), "all")
+        with self.assertRaises(ValueError):
+            tool.parse_config_value("crop", "top")
 
     def test_turned_by_hand(self):
         info = tool.analyze_page(sheet_scan(), corrected(), 75)

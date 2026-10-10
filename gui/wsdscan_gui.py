@@ -132,6 +132,8 @@ class ScanSettings:
         self.resolution = ChoiceRow(_("Resolution"), self._resolution_options(),
                                     choices.pick_resolution(values["resolution"]))
         self.paper = ChoiceRow(_("Paper size"), scanform.PAPERS, values["paper"])
+        self.crop = ChoiceRow(_("Cut to the sheet"), scanform.CROPS, values["crop"])
+        self.crop.set_subtitle(_("Straightened pages are always cut on all sides"))
         self.lossless = Adw.SwitchRow(use_markup=False, title=_("Lossless"))
         self.exposure = Adw.ExpanderRow(use_markup=False, title=_("Adjust brightness and contrast"),
                                         subtitle=_("Experimental; off = scanner default"),
@@ -165,12 +167,18 @@ class ScanSettings:
             active=bool(values["review_pages"]))
 
         self.mode.connect("notify::selected", lambda *_a: self.sync_lossless())
+        self.paper.connect("notify::selected", lambda *_a: self.sync_crop())
+        self.sync_crop()
         self.lossless.connect("notify::active", self._on_lossless_toggled)
         self.sync_lossless()
 
     def rows(self):
-        return [self.source, self.mode, self.resolution, self.paper, self.lossless, self.exposure,
-                self.ocr, self.skip_blank, self.deskew, self.auto_rotate, self.review]
+        return [self.source, self.mode, self.resolution, self.paper, self.crop, self.lossless,
+                self.exposure, self.ocr, self.skip_blank, self.deskew, self.auto_rotate, self.review]
+
+    def sync_crop(self):
+        """Which edges to cut only matters with the automatic paper size."""
+        self.crop.set_visible(self.paper.get_value() == "auto")
 
     def _resolution_options(self):
         return [(r, f"{r} dpi") for r in self.choices.resolutions]
@@ -230,6 +238,7 @@ class ScanSettings:
         self.mode.set_value(values["mode"])
         self.resolution.set_value(self.choices.pick_resolution(values["resolution"]))
         self.paper.set_value(values["paper"])
+        self.crop.set_value(values["crop"])
         self.lossless_wanted = bool(values["lossless"])
         self.set_exposure(values["brightness"], values["contrast"])
         self.set_ocr(values)
@@ -242,6 +251,7 @@ class ScanSettings:
             "mode": self.mode.get_value(),
             "resolution": self.resolution.get_value(),
             "paper": self.paper.get_value(),
+            "crop": self.crop.get_value(),
             # The user's choice; bw / scanner limits are applied when scanning.
             "lossless": self.lossless_wanted,
             "brightness": int(self.brightness.get_value()) if exposure else None,

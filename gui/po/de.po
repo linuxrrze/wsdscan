@@ -26,458 +26,466 @@ msgid "Paper size"
 msgstr "Papierformat"
 
 #: wsdscan_gui.py:135
+msgid "Cut to the sheet"
+msgstr "Auf das Blatt zuschneiden"
+
+#: wsdscan_gui.py:136
+msgid "Straightened pages are always cut on all sides"
+msgstr "Gerade ausgerichtete Seiten werden immer an allen Seiten zugeschnitten"
+
+#: wsdscan_gui.py:137
 msgid "Lossless"
 msgstr "Verlustfrei"
 
-#: wsdscan_gui.py:136
+#: wsdscan_gui.py:138
 msgid "Adjust brightness and contrast"
 msgstr "Helligkeit und Kontrast anpassen"
 
-#: wsdscan_gui.py:137
+#: wsdscan_gui.py:139
 msgid "Experimental; off = scanner default"
 msgstr "Experimentell; aus = Vorgabe des Scanners"
 
-#: wsdscan_gui.py:141
+#: wsdscan_gui.py:143
 msgid "Brightness"
 msgstr "Helligkeit"
 
-#: wsdscan_gui.py:145
+#: wsdscan_gui.py:147
 msgid "Contrast"
 msgstr "Kontrast"
 
-#: wsdscan_gui.py:150
+#: wsdscan_gui.py:152
 msgid "Recognize text (OCR)"
 msgstr "Text erkennen (OCR)"
 
-#: wsdscan_gui.py:153
+#: wsdscan_gui.py:155
 msgid "Remove blank pages"
 msgstr "Leere Seiten entfernen"
 
-#: wsdscan_gui.py:154
+#: wsdscan_gui.py:156
 msgid "For example the empty backs of one-sided pages"
 msgstr "Zum Beispiel die leeren Rückseiten einseitig bedruckter Blätter"
 
-#: wsdscan_gui.py:157
+#: wsdscan_gui.py:159
 msgid "Straighten pages"
 msgstr "Seiten gerade ausrichten"
 
-#: wsdscan_gui.py:158
+#: wsdscan_gui.py:160
 msgid "Pages fed in crooked; works best with automatic paper size"
 msgstr "Schief eingezogene Seiten; am besten mit automatischem Papierformat"
 
-#: wsdscan_gui.py:160
+#: wsdscan_gui.py:162
 msgid "Turn pages upright"
 msgstr "Seiten aufrecht drehen"
 
-#: wsdscan_gui.py:163
+#: wsdscan_gui.py:165
 msgid "Review pages before saving"
 msgstr "Seiten vor dem Speichern prüfen"
 
-#: wsdscan_gui.py:164
+#: wsdscan_gui.py:166
 msgid "Remove single pages before saving and text recognition"
 msgstr "Einzelne Seiten vor dem Speichern und der Texterkennung entfernen"
 
-#: wsdscan_gui.py:203
+#: wsdscan_gui.py:211
 msgid "Pages that are sideways or upside down"
 msgstr "Seiten, die quer liegen oder auf dem Kopf stehen"
 
-#: wsdscan_gui.py:269
+#: wsdscan_gui.py:279
 msgid "Choose folder"
 msgstr "Ordner wählen"
 
-#: wsdscan_gui.py:276
+#: wsdscan_gui.py:286
 msgid "Save scans in"
 msgstr "Scans speichern in"
 
-#: wsdscan_gui.py:412
+#: wsdscan_gui.py:422
 msgid "Turn left"
 msgstr "Nach links drehen"
 
-#: wsdscan_gui.py:412
+#: wsdscan_gui.py:422
 msgid "Turn right"
 msgstr "Nach rechts drehen"
 
-#: wsdscan_gui.py:422
+#: wsdscan_gui.py:432
 msgid "Keep this page"
 msgstr "Diese Seite behalten"
 
-#: wsdscan_gui.py:432
+#: wsdscan_gui.py:442
 msgid "Page {n}"
 msgstr "Seite {n}"
 
-#: wsdscan_gui.py:467
+#: wsdscan_gui.py:477
 msgid "Blank page"
 msgstr "Leere Seite"
 
-#: wsdscan_gui.py:482
+#: wsdscan_gui.py:492
 msgid "Text recognized"
 msgstr "Text erkannt"
 
-#: wsdscan_gui.py:485
+#: wsdscan_gui.py:495
 msgid "Waiting for text recognition"
 msgstr "Wartet auf die Texterkennung"
 
-#: wsdscan_gui.py:505 wsdscan_gui.py:668
+#: wsdscan_gui.py:515 wsdscan_gui.py:678
 msgid "Looking for the scanner…"
 msgstr "Scanner wird gesucht …"
 
-#: wsdscan_gui.py:507
+#: wsdscan_gui.py:517
 msgid "Reconnect to the scanner"
 msgstr "Erneut mit dem Scanner verbinden"
 
-#: wsdscan_gui.py:511 wsdscan_gui.py:1299 scanform.py:539 scanform.py:533
+#: wsdscan_gui.py:521 wsdscan_gui.py:1309 scanform.py:544 scanform.py:538
 msgid "Preferences"
 msgstr "Einstellungen"
 
-#: wsdscan_gui.py:512
+#: wsdscan_gui.py:522
 msgid "About Scan to PDF"
 msgstr "Info zu Scan to PDF"
 
-#: wsdscan_gui.py:513 scanform.py:393
+#: wsdscan_gui.py:523 scanform.py:398
 msgid "Quit"
 msgstr "Beenden"
 
-#: wsdscan_gui.py:515
+#: wsdscan_gui.py:525
 msgid "Main Menu"
 msgstr "Hauptmenü"
 
-#: wsdscan_gui.py:520 wsdscan_gui.py:524 wsdscan_gui.py:666 wsdscan_gui.py:1111 wsdscan_gui.py:1255 scanform.py:295 scanform.py:535 scanform.py:264
+#: wsdscan_gui.py:530 wsdscan_gui.py:534 wsdscan_gui.py:676 wsdscan_gui.py:1121 wsdscan_gui.py:1265 scanform.py:299 scanform.py:540 scanform.py:268
 msgid "Scanner"
 msgstr "Scanner"
 
-#: wsdscan_gui.py:534 wsdscan_gui.py:1146
+#: wsdscan_gui.py:544 wsdscan_gui.py:1156
 msgid "File name"
 msgstr "Dateiname"
 
-#: wsdscan_gui.py:536 wsdscan_gui.py:1144
+#: wsdscan_gui.py:546 wsdscan_gui.py:1154
 msgid "Folder"
 msgstr "Ordner"
 
-#: wsdscan_gui.py:539 wsdscan_gui.py:1131
+#: wsdscan_gui.py:549 wsdscan_gui.py:1141
 msgid "Scan settings"
 msgstr "Scan-Einstellungen"
 
-#: wsdscan_gui.py:542
+#: wsdscan_gui.py:552
 msgid "Document"
 msgstr "Dokument"
 
-#: wsdscan_gui.py:550 scanform.py:391
+#: wsdscan_gui.py:560 scanform.py:396
 msgid "Scan"
 msgstr "Scannen"
 
-#: wsdscan_gui.py:558
+#: wsdscan_gui.py:568
 msgid "Put your pages in the document feeder, then click Scan."
 msgstr "Legen Sie die Seiten in den Einzug und klicken Sie dann auf „Scannen“."
 
-#: wsdscan_gui.py:561
+#: wsdscan_gui.py:571
 msgid "Discard Scan"
 msgstr "Scan verwerfen"
 
-#: wsdscan_gui.py:564
+#: wsdscan_gui.py:574
 msgid "Save"
 msgstr "Speichern"
 
-#: wsdscan_gui.py:588
+#: wsdscan_gui.py:598
 msgid "Pages"
 msgstr "Seiten"
 
-#: wsdscan_gui.py:669
+#: wsdscan_gui.py:679
 msgid "Looking for scanners on the network…"
 msgstr "Scanner im Netzwerk werden gesucht …"
 
-#: wsdscan_gui.py:763
+#: wsdscan_gui.py:773
 msgid "Ready"
 msgstr "Bereit"
 
-#: wsdscan_gui.py:853
+#: wsdscan_gui.py:863
 msgid "Cannot use the folder: {error}"
 msgstr "Der Ordner kann nicht verwendet werden: {error}"
 
-#: wsdscan_gui.py:903
+#: wsdscan_gui.py:913
 msgid "Cannot use the folder {folder}: {error}"
 msgstr "Der Ordner {folder} kann nicht verwendet werden: {error}"
 
-#: wsdscan_gui.py:922
+#: wsdscan_gui.py:932
 msgid "Cancelling after the current page…"
 msgstr "Abbruch nach der aktuellen Seite …"
 
-#: wsdscan_gui.py:937
+#: wsdscan_gui.py:947
 msgid "Saved {pages} pages as “{name}”, removed {blank} blank pages"
 msgstr "{pages} Seiten als „{name}“ gespeichert, {blank} leere Seiten entfernt"
 
-#: wsdscan_gui.py:940
+#: wsdscan_gui.py:950
 msgid "Saved {pages} pages as “{name}”"
 msgstr "{pages} Seiten als „{name}“ gespeichert"
 
-#: wsdscan_gui.py:942
+#: wsdscan_gui.py:952
 msgid "Scan stopped early; saved {pages} pages as “{name}”"
 msgstr "Scan vorzeitig beendet; {pages} Seiten als „{name}“ gespeichert"
 
-#: wsdscan_gui.py:944
+#: wsdscan_gui.py:954
 msgid "Open"
 msgstr "Öffnen"
 
-#: wsdscan_gui.py:951
+#: wsdscan_gui.py:961
 msgid "{error}\n\nThe scan was saved without recognized text."
 msgstr "{error}\n\nDer Scan wurde ohne erkannten Text gespeichert."
 
-#: wsdscan_gui.py:952
+#: wsdscan_gui.py:962
 msgid "Text recognition failed"
 msgstr "Texterkennung fehlgeschlagen"
 
-#: wsdscan_gui.py:970
+#: wsdscan_gui.py:980
 msgid "Scan discarded"
 msgstr "Scan verworfen"
 
-#: wsdscan_gui.py:972
+#: wsdscan_gui.py:982
 msgid "Scan cancelled"
 msgstr "Scan abgebrochen"
 
-#: wsdscan_gui.py:977
+#: wsdscan_gui.py:987
 msgid "Scanning failed"
 msgstr "Scannen fehlgeschlagen"
 
-#: wsdscan_gui.py:978
+#: wsdscan_gui.py:988
 msgid "OK"
 msgstr "OK"
 
-#: wsdscan_gui.py:1002
+#: wsdscan_gui.py:1012
 msgid "Scan Settings"
 msgstr "Scan-Einstellungen"
 
-#: wsdscan_gui.py:1005
+#: wsdscan_gui.py:1015
 msgid "These settings apply to your next scans. Only options your scanner supports are offered."
 msgstr "Diese Einstellungen gelten für Ihre nächsten Scans. Angeboten wird nur, was Ihr Scanner unterstützt."
 
-#: wsdscan_gui.py:1012
+#: wsdscan_gui.py:1022
 msgid "Reset to Defaults"
 msgstr "Auf Vorgaben zurücksetzen"
 
-#: wsdscan_gui.py:1014
+#: wsdscan_gui.py:1024
 msgid "Save for This Scanner"
 msgstr "Für diesen Scanner speichern"
 
-#: wsdscan_gui.py:1015
+#: wsdscan_gui.py:1025
 msgid "Save as Defaults"
 msgstr "Als Vorgabe speichern"
 
-#: wsdscan_gui.py:1031
+#: wsdscan_gui.py:1041
 msgid "Defaults restored"
 msgstr "Vorgaben wiederhergestellt"
 
-#: wsdscan_gui.py:1037
+#: wsdscan_gui.py:1047
 msgid "Could not save the defaults: {error}"
 msgstr "Die Vorgaben konnten nicht gespeichert werden: {error}"
 
-#: wsdscan_gui.py:1039
+#: wsdscan_gui.py:1049
 msgid "Saved as defaults of “{name}”"
 msgstr "Als Vorgaben für „{name}“ gespeichert"
 
-#: wsdscan_gui.py:1041
+#: wsdscan_gui.py:1051
 msgid "Saved as defaults"
 msgstr "Als Vorgaben gespeichert"
 
-#: wsdscan_gui.py:1055
+#: wsdscan_gui.py:1065
 msgid "Engine"
 msgstr "Programm"
 
-#: wsdscan_gui.py:1057
+#: wsdscan_gui.py:1067
 msgid "Choose languages automatically"
 msgstr "Sprachen automatisch wählen"
 
-#: wsdscan_gui.py:1058
+#: wsdscan_gui.py:1068
 msgid "Currently: {langs}"
 msgstr "Derzeit: {langs}"
 
-#: wsdscan_gui.py:1064
+#: wsdscan_gui.py:1074
 msgid "Not installed"
 msgstr "Nicht installiert"
 
-#: wsdscan_gui.py:1066
+#: wsdscan_gui.py:1076
 msgid "More languages come as packages, e.g. “tesseract-ocr-fra” for French."
 msgstr "Weitere Sprachen gibt es als Pakete, z. B. „tesseract-ocr-fra“ für Französisch."
 
-#: wsdscan_gui.py:1099
+#: wsdscan_gui.py:1109
 msgid "New Scanner"
 msgstr "Neuer Scanner"
 
-#: wsdscan_gui.py:1112
+#: wsdscan_gui.py:1122
 msgid "Name"
 msgstr "Name"
 
-#: wsdscan_gui.py:1114
+#: wsdscan_gui.py:1124
 msgid "IP address or host name"
 msgstr "IP-Adresse oder Rechnername"
 
-#: wsdscan_gui.py:1117
+#: wsdscan_gui.py:1127
 msgid "Device"
 msgstr "Gerät"
 
-#: wsdscan_gui.py:1119 wsdscan_gui.py:1400
+#: wsdscan_gui.py:1129 wsdscan_gui.py:1410
 msgid "Use by default"
 msgstr "Standardmäßig verwenden"
 
-#: wsdscan_gui.py:1123
+#: wsdscan_gui.py:1133
 msgid "To change, make another scanner the default"
 msgstr "Zum Ändern einen anderen Scanner als Standard festlegen"
 
-#: wsdscan_gui.py:1132
+#: wsdscan_gui.py:1142
 msgid "Used for every scan with this scanner."
 msgstr "Gilt für jeden Scan mit diesem Scanner."
 
-#: wsdscan_gui.py:1138
+#: wsdscan_gui.py:1148
 msgid "Text recognition (OCR)"
 msgstr "Texterkennung (OCR)"
 
-#: wsdscan_gui.py:1143
+#: wsdscan_gui.py:1153
 msgid "Saving"
 msgstr "Speichern"
 
-#: wsdscan_gui.py:1148
+#: wsdscan_gui.py:1158
 msgid "{date} and {time} are replaced with the scan date and time."
 msgstr "{date} und {time} werden durch Datum und Uhrzeit des Scans ersetzt."
 
-#: wsdscan_gui.py:1159
+#: wsdscan_gui.py:1169
 msgid "Duplicate"
 msgstr "Duplizieren"
 
-#: wsdscan_gui.py:1162
+#: wsdscan_gui.py:1172
 msgid "Remove Scanner"
 msgstr "Scanner entfernen"
 
-#: wsdscan_gui.py:1200
+#: wsdscan_gui.py:1210
 msgid "No address: found automatically on the network when scanning"
 msgstr "Keine Adresse: wird beim Scannen automatisch im Netzwerk gesucht"
 
-#: wsdscan_gui.py:1203 wsdscan_gui.py:1431 wsdscan_gui.py:524 wsdscan_gui.py:667
+#: wsdscan_gui.py:1213 wsdscan_gui.py:1441 wsdscan_gui.py:534 wsdscan_gui.py:677
 msgid "Searching…"
 msgstr "Suche läuft …"
 
-#: wsdscan_gui.py:1231
+#: wsdscan_gui.py:1241
 msgid "Not found: {error}"
 msgstr "Nicht gefunden: {error}"
 
-#: wsdscan_gui.py:1280
+#: wsdscan_gui.py:1290
 msgid "Remove “{name}”?"
 msgstr "„{name}“ entfernen?"
 
-#: wsdscan_gui.py:1281
+#: wsdscan_gui.py:1291
 msgid "Its settings are deleted. The scanner itself is not affected."
 msgstr "Seine Einstellungen werden gelöscht. Der Scanner selbst bleibt unverändert."
 
-#: wsdscan_gui.py:1282 wsdscan_gui.py:554
+#: wsdscan_gui.py:1292 wsdscan_gui.py:564
 msgid "Cancel"
 msgstr "Abbrechen"
 
-#: wsdscan_gui.py:1283 wsdscan_gui.py:1406
+#: wsdscan_gui.py:1293 wsdscan_gui.py:1416
 msgid "Remove"
 msgstr "Entfernen"
 
-#: wsdscan_gui.py:1306
+#: wsdscan_gui.py:1316
 msgid "Scanners"
 msgstr "Scanner"
 
-#: wsdscan_gui.py:1307
+#: wsdscan_gui.py:1317
 msgid "Find Scanners"
 msgstr "Scanner suchen"
 
-#: wsdscan_gui.py:1313
+#: wsdscan_gui.py:1323
 msgid "Scanners on the network"
 msgstr "Scanner im Netzwerk"
 
-#: wsdscan_gui.py:1316
+#: wsdscan_gui.py:1326
 msgid "After scanning"
 msgstr "Nach dem Scannen"
 
-#: wsdscan_gui.py:1317
+#: wsdscan_gui.py:1327
 msgid "Open PDF after scanning"
 msgstr "PDF nach dem Scannen öffnen"
 
-#: wsdscan_gui.py:1319
+#: wsdscan_gui.py:1329
 msgid "Notify when a scan is done"
 msgstr "Benachrichtigen, wenn ein Scan fertig ist"
 
-#: wsdscan_gui.py:1320
+#: wsdscan_gui.py:1330
 msgid "Only while the window is in the background"
 msgstr "Nur wenn das Fenster im Hintergrund ist"
 
-#: wsdscan_gui.py:1325
+#: wsdscan_gui.py:1335
 msgid "Status bar"
 msgstr "Statusleiste"
 
-#: wsdscan_gui.py:1326
+#: wsdscan_gui.py:1336
 msgid "Show icon in the status bar"
 msgstr "Symbol in der Statusleiste anzeigen"
 
-#: wsdscan_gui.py:1329
+#: wsdscan_gui.py:1339
 msgid "Closing the window keeps Scan to PDF running there."
 msgstr "Nach dem Schließen des Fensters läuft Scan to PDF dort weiter."
 
-#: wsdscan_gui.py:1332
+#: wsdscan_gui.py:1342
 msgid "Your desktop shows no status bar icons right now. On GNOME, install the “AppIndicator and KStatusNotifierItem Support” extension."
 msgstr "Ihre Arbeitsumgebung zeigt derzeit keine Statusleisten-Symbole an. Installieren Sie unter GNOME die Erweiterung „AppIndicator and KStatusNotifierItem Support“."
 
-#: wsdscan_gui.py:1335
+#: wsdscan_gui.py:1345
 msgid "Start at login"
 msgstr "Bei der Anmeldung starten"
 
-#: wsdscan_gui.py:1336
+#: wsdscan_gui.py:1346
 msgid "In the status bar, without opening the window"
 msgstr "In der Statusleiste, ohne das Fenster zu öffnen"
 
-#: wsdscan_gui.py:1344
+#: wsdscan_gui.py:1354
 msgid "The scanners and their settings are shared with the wsdscan command (--scanner NAME)."
 msgstr "Die Scanner und ihre Einstellungen gelten auch für den Befehl wsdscan (--scanner NAME)."
 
-#: wsdscan_gui.py:1347
+#: wsdscan_gui.py:1357
 msgid "Settings file"
 msgstr "Einstellungsdatei"
 
-#: wsdscan_gui.py:1391
+#: wsdscan_gui.py:1401
 msgid "Each scanner has its own settings. The marked one is used by default."
 msgstr "Jeder Scanner hat eigene Einstellungen. Der markierte wird standardmäßig verwendet."
 
-#: wsdscan_gui.py:1393
+#: wsdscan_gui.py:1403
 msgid "No scanner configured yet. Add one, or let Find Scanners look on the network."
 msgstr "Noch kein Scanner eingerichtet. Fügen Sie einen hinzu oder lassen Sie „Scanner suchen“ im Netzwerk suchen."
 
-#: wsdscan_gui.py:1415
+#: wsdscan_gui.py:1425
 msgid "Add Scanner by Address…"
 msgstr "Scanner per Adresse hinzufügen …"
 
-#: wsdscan_gui.py:1416
+#: wsdscan_gui.py:1426
 msgid "If it is not found on the network"
 msgstr "Falls er im Netzwerk nicht gefunden wird"
 
-#: wsdscan_gui.py:1444
+#: wsdscan_gui.py:1454
 msgid "Add"
 msgstr "Hinzufügen"
 
-#: wsdscan_gui.py:1454
+#: wsdscan_gui.py:1464
 msgid "No scanner found"
 msgstr "Kein Scanner gefunden"
 
-#: wsdscan_gui.py:1464 wsdscan_gui.py:1444
+#: wsdscan_gui.py:1474 wsdscan_gui.py:1454
 msgid "Add Again"
 msgstr "Erneut hinzufügen"
 
-#: wsdscan_gui.py:1482
+#: wsdscan_gui.py:1492
 msgid "Could not save the preferences: {error}"
 msgstr "Die Einstellungen konnten nicht gespeichert werden: {error}"
 
-#: wsdscan_gui.py:1497
+#: wsdscan_gui.py:1507
 msgid "Start in the status bar without opening the window"
 msgstr "In der Statusleiste starten, ohne das Fenster zu öffnen"
 
-#: wsdscan_gui.py:1559
+#: wsdscan_gui.py:1569
 msgid "The settings file could not be read and is ignored until you save the preferences:\n{error}"
 msgstr "Die Einstellungsdatei konnte nicht gelesen werden und wird ignoriert, bis Sie die Einstellungen speichern:\n{error}"
 
-#: wsdscan_gui.py:1712
+#: wsdscan_gui.py:1722
 msgid "Scan documents from WSD network scanners into PDF files."
 msgstr "Dokumente von WSD-Netzwerkscannern als PDF-Dateien scannen."
 
-#: wsdscan_gui.py:1725
+#: wsdscan_gui.py:1735
 msgid "Scan finished"
 msgstr "Scan abgeschlossen"
 
@@ -501,356 +509,368 @@ msgstr "Graustufen"
 msgid "Black & white"
 msgstr "Schwarzweiß"
 
-#: scanform.py:30 scanform.py:32
+#: scanform.py:30 scanform.py:34
 msgid "Automatic"
 msgstr "Automatisch"
 
-#: scanform.py:80
+#: scanform.py:33
+msgid "Left and right"
+msgstr "Links und rechts"
+
+#: scanform.py:33
+msgid "All sides"
+msgstr "Alle Seiten"
+
+#: scanform.py:82
 msgid "Arabic"
 msgstr "Arabisch"
 
-#: scanform.py:80
+#: scanform.py:82
 msgid "Bulgarian"
 msgstr "Bulgarisch"
 
-#: scanform.py:80
+#: scanform.py:82
 msgid "Catalan"
 msgstr "Katalanisch"
 
-#: scanform.py:80
+#: scanform.py:82
 msgid "Czech"
 msgstr "Tschechisch"
 
-#: scanform.py:81
+#: scanform.py:83
 msgid "Chinese (simplified)"
 msgstr "Chinesisch (vereinfacht)"
 
-#: scanform.py:81
+#: scanform.py:83
 msgid "Chinese (traditional)"
 msgstr "Chinesisch (traditionell)"
 
-#: scanform.py:82
+#: scanform.py:84
 msgid "Danish"
 msgstr "Dänisch"
 
-#: scanform.py:82
+#: scanform.py:84
 msgid "German"
 msgstr "Deutsch"
 
-#: scanform.py:82
+#: scanform.py:84
 msgid "Greek"
 msgstr "Griechisch"
 
-#: scanform.py:82
+#: scanform.py:84
 msgid "English"
 msgstr "Englisch"
 
-#: scanform.py:83
+#: scanform.py:85
 msgid "Estonian"
 msgstr "Estnisch"
 
-#: scanform.py:83
+#: scanform.py:85
 msgid "Finnish"
 msgstr "Finnisch"
 
-#: scanform.py:83
+#: scanform.py:85
 msgid "French"
 msgstr "Französisch"
 
-#: scanform.py:83
+#: scanform.py:85
 msgid "Hebrew"
 msgstr "Hebräisch"
 
-#: scanform.py:84
+#: scanform.py:86
 msgid "Croatian"
 msgstr "Kroatisch"
 
-#: scanform.py:84
+#: scanform.py:86
 msgid "Hungarian"
 msgstr "Ungarisch"
 
-#: scanform.py:84
+#: scanform.py:86
 msgid "Italian"
 msgstr "Italienisch"
 
-#: scanform.py:84
+#: scanform.py:86
 msgid "Japanese"
 msgstr "Japanisch"
 
-#: scanform.py:85
+#: scanform.py:87
 msgid "Korean"
 msgstr "Koreanisch"
 
-#: scanform.py:85
+#: scanform.py:87
 msgid "Latvian"
 msgstr "Lettisch"
 
-#: scanform.py:85
+#: scanform.py:87
 msgid "Lithuanian"
 msgstr "Litauisch"
 
-#: scanform.py:85
+#: scanform.py:87
 msgid "Dutch"
 msgstr "Niederländisch"
 
-#: scanform.py:86
+#: scanform.py:88
 msgid "Norwegian"
 msgstr "Norwegisch"
 
-#: scanform.py:86
+#: scanform.py:88
 msgid "Polish"
 msgstr "Polnisch"
 
-#: scanform.py:86
+#: scanform.py:88
 msgid "Portuguese"
 msgstr "Portugiesisch"
 
-#: scanform.py:86
+#: scanform.py:88
 msgid "Romanian"
 msgstr "Rumänisch"
 
-#: scanform.py:87
+#: scanform.py:89
 msgid "Russian"
 msgstr "Russisch"
 
-#: scanform.py:87
+#: scanform.py:89
 msgid "Slovak"
 msgstr "Slowakisch"
 
-#: scanform.py:87
+#: scanform.py:89
 msgid "Slovenian"
 msgstr "Slowenisch"
 
-#: scanform.py:87
+#: scanform.py:89
 msgid "Spanish"
 msgstr "Spanisch"
 
-#: scanform.py:88
+#: scanform.py:90
 msgid "Serbian"
 msgstr "Serbisch"
 
-#: scanform.py:88
+#: scanform.py:90
 msgid "Swedish"
 msgstr "Schwedisch"
 
-#: scanform.py:88
+#: scanform.py:90
 msgid "Turkish"
 msgstr "Türkisch"
 
-#: scanform.py:88
+#: scanform.py:90
 msgid "Ukrainian"
 msgstr "Ukrainisch"
 
-#: scanform.py:100
+#: scanform.py:102
 msgid "Install OCRmyPDF or Tesseract to enable text recognition, e.g. “sudo apt install ocrmypdf”."
 msgstr "Installieren Sie OCRmyPDF oder Tesseract, um die Texterkennung zu nutzen, z. B. „sudo apt install ocrmypdf“."
 
-#: scanform.py:103
+#: scanform.py:105
 msgid "Needs Tesseract with orientation data, e.g. “sudo apt install tesseract-ocr-osd”."
 msgstr "Benötigt Tesseract mit Daten zur Ausrichtung, z. B. „sudo apt install tesseract-ocr-osd“."
 
-#: scanform.py:180
+#: scanform.py:182
 msgid "Not offered by this scanner"
 msgstr "Von diesem Scanner nicht angeboten"
 
-#: scanform.py:182
+#: scanform.py:184
 msgid "This scanner only sends uncompressed images"
 msgstr "Dieser Scanner sendet nur unkomprimierte Bilder"
 
-#: scanform.py:204
+#: scanform.py:206
 msgid "Black & white is always lossless"
 msgstr "Schwarzweiß ist immer verlustfrei"
 
-#: scanform.py:209
+#: scanform.py:211
 msgid "Much larger files; no JPEG compression"
 msgstr "Viel größere Dateien; keine JPEG-Kompression"
 
-#: scanform.py:219
+#: scanform.py:221
+msgid "cut on all sides"
+msgstr "an allen Seiten zuschneiden"
+
+#: scanform.py:223
 msgid "lossless"
 msgstr "verlustfrei"
 
-#: scanform.py:221
+#: scanform.py:225
 msgid "brightness {n}"
 msgstr "Helligkeit {n}"
 
-#: scanform.py:223
+#: scanform.py:227
 msgid "contrast {n}"
 msgstr "Kontrast {n}"
 
-#: scanform.py:225
+#: scanform.py:229
 msgid "OCR"
 msgstr "OCR"
 
-#: scanform.py:227
+#: scanform.py:231
 msgid "remove blank pages"
 msgstr "leere Seiten entfernen"
 
-#: scanform.py:229
+#: scanform.py:233
 msgid "straighten"
 msgstr "gerade ausrichten"
 
-#: scanform.py:231
+#: scanform.py:235
 msgid "turn upright"
 msgstr "aufrecht drehen"
 
-#: scanform.py:233
+#: scanform.py:237
 msgid "review pages"
 msgstr "Seiten prüfen"
 
-#: scanform.py:256
+#: scanform.py:260
 msgid "Found automatically"
 msgstr "Automatisch gefunden"
 
-#: scanform.py:258
+#: scanform.py:262
 msgid "model “{model}”"
 msgstr "Modell „{model}“"
 
-#: scanform.py:340
+#: scanform.py:345
 msgid "Cut to the sheet: {w} × {h} mm"
 msgstr "Auf das Blatt zugeschnitten: {w} × {h} mm"
 
-#: scanform.py:343
+#: scanform.py:348
 msgid "Straightened by {angle}°"
 msgstr "Um {angle}° gerade gerichtet"
 
-#: scanform.py:345
+#: scanform.py:350
 msgid "Turned upright by {angle}°"
 msgstr "Um {angle}° aufrecht gedreht"
 
-#: scanform.py:347
+#: scanform.py:352
 msgid "{correction} (off)"
 msgstr "{correction} (aus)"
 
-#: scanform.py:362
+#: scanform.py:367
 msgid "Connecting to the scanner…"
 msgstr "Verbindung zum Scanner wird hergestellt …"
 
-#: scanform.py:364
+#: scanform.py:369
 msgid "Scanning…"
 msgstr "Scannen …"
 
-#: scanform.py:366
+#: scanform.py:371
 msgid "Scanned {n} page"
 msgid_plural "Scanned {n} pages"
 msgstr[0] "{n} Seite gescannt"
 msgstr[1] "{n} Seiten gescannt"
 
-#: scanform.py:368
+#: scanform.py:373
 msgid "Saving PDF…"
 msgstr "PDF wird gespeichert …"
 
-#: scanform.py:370
+#: scanform.py:375
 msgid "Recognizing text…"
 msgstr "Text wird erkannt …"
 
-#: scanform.py:372
+#: scanform.py:377
 msgid "Recognizing text: page {n} of {total}"
 msgstr "Text wird erkannt: Seite {n} von {total}"
 
-#: scanform.py:374
+#: scanform.py:379
 msgid "Untick the pages you don’t want, then click Save. You can still change the file name and folder."
 msgstr "Entfernen Sie den Haken bei unerwünschten Seiten und klicken Sie dann auf „Speichern“. Dateiname und Ordner lassen sich noch ändern."
 
-#: scanform.py:382
+#: scanform.py:387
 msgid "{n} page"
 msgid_plural "{n} pages"
 msgstr[0] "{n} Seite"
 msgstr[1] "{n} Seiten"
 
-#: scanform.py:383
+#: scanform.py:388
 msgid "{kept} of {n} page kept"
 msgid_plural "{kept} of {n} pages kept"
 msgstr[0] "{kept} von {n} Seite behalten"
 msgstr[1] "{kept} von {n} Seiten behalten"
 
-#: scanform.py:390
+#: scanform.py:395
 msgid "Open Scan to PDF"
 msgstr "Scan to PDF öffnen"
 
-#: scanform.py:454
+#: scanform.py:459
 msgid "Scan to PDF in the status bar"
 msgstr "Scan to PDF in der Statusleiste"
 
-#: scanform.py:508 scanform.py:530
+#: scanform.py:513 scanform.py:535
 msgid "Choose a scanner"
 msgstr "Scanner wählen"
 
-#: scanform.py:508
+#: scanform.py:513
 msgid "Several scanners found"
 msgstr "Mehrere Scanner gefunden"
 
-#: scanform.py:510
+#: scanform.py:515
 msgid "Several scanners are on the network. Choose yours in the preferences."
 msgstr "Im Netzwerk sind mehrere Scanner. Wählen Sie Ihren in den Einstellungen."
 
-#: scanform.py:511
+#: scanform.py:516
 msgid "Choose Scanner"
 msgstr "Scanner wählen"
 
-#: scanform.py:514 scanform.py:514
+#: scanform.py:519 scanform.py:519
 msgid "No scanner set up"
 msgstr "Kein Scanner eingerichtet"
 
-#: scanform.py:515
+#: scanform.py:520
 msgid "None found automatically on the network"
 msgstr "Im Netzwerk wurde keiner automatisch gefunden"
 
-#: scanform.py:516
+#: scanform.py:521
 msgid "No scanner is set up, and none was found on the network. Add your scanner in the preferences."
 msgstr "Es ist kein Scanner eingerichtet, und im Netzwerk wurde keiner gefunden. Fügen Sie Ihren Scanner in den Einstellungen hinzu."
 
-#: scanform.py:518
+#: scanform.py:523
 msgid "Add Scanner"
 msgstr "Scanner hinzufügen"
 
-#: scanform.py:520
+#: scanform.py:525
 msgid "Not reachable at {host}"
 msgstr "Unter {host} nicht erreichbar"
 
-#: scanform.py:521
+#: scanform.py:526
 msgid "Not found on the network"
 msgstr "Im Netzwerk nicht gefunden"
 
-#: scanform.py:523
+#: scanform.py:528
 msgid "Scanner not reachable"
 msgstr "Scanner nicht erreichbar"
 
-#: scanform.py:524
+#: scanform.py:529
 msgid "{where} · trying again"
 msgstr "{where} · neuer Versuch folgt"
 
-#: scanform.py:525
+#: scanform.py:530
 msgid "“{name}” is not reachable. Check that it is switched on and connected; it is looked for again automatically."
 msgstr "„{name}“ ist nicht erreichbar. Prüfen Sie, ob er eingeschaltet und verbunden ist; er wird automatisch erneut gesucht."
 
-#: scanform.py:527
+#: scanform.py:532
 msgid "Retry"
 msgstr "Erneut versuchen"
 
-#: scanform.py:531
+#: scanform.py:536
 msgid "Several scanners match “{name}”. Set its address in the preferences."
 msgstr "Mehrere Scanner passen zu „{name}“. Legen Sie seine Adresse in den Einstellungen fest."
 
-#: scanform.py:535
+#: scanform.py:540
 msgid "Scanner error"
 msgstr "Scannerfehler"
 
-#: scanform.py:536
+#: scanform.py:541
 msgid "“{name}” could not be used (see below). Check its settings in the preferences."
 msgstr "„{name}“ konnte nicht verwendet werden (siehe unten). Prüfen Sie seine Einstellungen."
 
-#: scanform.py:538
+#: scanform.py:543
 msgid "The scanner could not be used (see below)."
 msgstr "Der Scanner konnte nicht verwendet werden (siehe unten)."
 
-#: scanform.py:543
+#: scanform.py:548
 msgid "Idle"
 msgstr "Bereit"
 
-#: scanform.py:543
+#: scanform.py:548
 msgid "Busy"
 msgstr "Beschäftigt"
 
-#: scanform.py:543
+#: scanform.py:548
 msgid "Stopped"
 msgstr "Angehalten"
