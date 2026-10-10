@@ -10,13 +10,25 @@ import os
 import sys
 
 TESSERACT = r'''
-import json, os, sys
+import json, os, re, sys
 args = sys.argv[1:]
 if args == ["--version"]:
     print("tesseract 5.3.4\n leptonica-1.84.1"); sys.exit(0)
 if args == ["--list-langs"]:
-    print('List of available languages in "/usr/share/tesseract-ocr/5/tessdata/" (3):')
-    print("deu\neng\nosd"); sys.exit(0)
+    print('List of available languages in "' + os.environ.get("FAKE_TESSDATA", "/nonexistent/tessdata/")
+          + '" (3):')
+    print("deu\neng" + ("" if os.environ.get("FAKE_NO_OSD") else "\nosd")); sys.exit(0)
+if "--psm" in args and args[args.index("--psm") + 1] == "0":
+    # Orientation detection: the image says what to report (b"ROTATE=90" in a JPEG comment).
+    with open(os.environ["FAKE_OCR_LOG"], "a") as log:
+        log.write(json.dumps(["tesseract-osd"] + args) + "\n")
+    data = open(args[0], "rb").read()
+    match = re.search(rb"ROTATE=(\d+)", data)
+    if not match:
+        print("Too few characters. Skipping this page", file=sys.stderr); sys.exit(1)
+    print(f"Page number: 0\nOrientation in degrees: 0\nRotate: {match.group(1).decode()}\n"
+          "Orientation confidence: 9.50\nScript: Latin\nScript confidence: 20.00")
+    sys.exit(0)
 with open(os.environ["FAKE_OCR_LOG"], "a") as log:
     pages = open(args[0]).read().split()
     log.write(json.dumps(["tesseract"] + args + ["PAGES"] + pages) + "\n")
@@ -26,9 +38,12 @@ if os.environ.get("FAKE_OCR_FAIL"):
 for n, page in enumerate(pages, 1):  # like real Tesseract with a file list
     print(f"Page {n} : {page}", file=sys.stderr, flush=True)
 lang = args[args.index("-l") + 1]
-with open(args[1] + ".pdf", "wb") as f:
-    f.write(b"%PDF-1.4 fake tesseract output lang=" + lang.encode()
-            + b" pages=" + str(len(pages)).encode() + b"\n")
+assert args[-1] == "tsv", args
+with open(args[1] + ".tsv", "w") as f:  # one word per page: "lang-pageN"
+    f.write("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n")
+    for n in range(1, len(pages) + 1):
+        f.write(f"1\t{n}\t0\t0\t0\t0\t0\t0\t400\t500\t-1\t\n")
+        f.write(f"5\t{n}\t1\t1\t1\t1\t20\t30\t120\t24\t95.5\t{lang}-page{n}\n")
 '''
 
 OCRMYPDF = r'''
@@ -62,8 +77,10 @@ def make_ocr_bin(directory, engines=("ocrmypdf", "tesseract")):
     return directory
 
 
-def read_log(path):
+def read_log(path, osd=False):
+    """The logged calls; orientation detection calls ("tesseract-osd") only with osd."""
     if not os.path.exists(path):
         return []
     with open(path) as f:
-        return [json.loads(line) for line in f]
+        calls = [json.loads(line) for line in f]
+    return [c for c in calls if osd or c[0] != "tesseract-osd"]

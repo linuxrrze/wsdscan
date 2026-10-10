@@ -13,6 +13,7 @@ is shown under the LAN address 192.168.2.13: only the displayed address is
 replaced; the app, the protocol and its checks are real.
 """
 
+import math
 import os
 import struct
 import sys
@@ -102,11 +103,50 @@ def render_page(doc):
     return b"".join(data[y * stride:y * stride + PAGE_W * 3] for y in range(PAGE_H))
 
 
-def rgb_tiff(pixels):
+# A scan of the whole scan area (8.5 x 15.5 in, paper size "Automatic"): the
+# sheet lies on the feeder's gray backing, white padding after it.
+SCAN_W, SCAN_H = round(PAGE_W * 8.5 / 8.27), round(PAGE_H * 15.5 / 11.69)
+# How each document's sheet went through the feeder: (degrees tilted, upside down)
+FEEDS = [(2.4, False), (0.0, False), (-1.8, True), (-3.1, False)]
+
+
+def render_scan(pixels, angle, upside_down):
+    """The page pixels as fed in crooked (and maybe upside down), on the backing."""
+    page = Gdk.MemoryTexture.new(PAGE_W, PAGE_H, Gdk.MemoryFormat.R8G8B8, GLib.Bytes.new(pixels),
+                                 PAGE_W * 3)
+    snapshot = Gtk.Snapshot()
+    area = Graphene.Rect().init(0, 0, SCAN_W, SCAN_H)
+    backing, padding = Gdk.RGBA(), Gdk.RGBA()
+    backing.parse("#b3b7bb")
+    padding.parse("#ffffff")
+    snapshot.append_color(backing, area)
+    snapshot.save()
+    snapshot.translate(Graphene.Point().init(SCAN_W / 2, PAGE_H / 2 + 30))
+    snapshot.rotate(angle + (180 if upside_down else 0))
+    snapshot.append_texture(page, Graphene.Rect().init(-PAGE_W / 2, -PAGE_H / 2, PAGE_W, PAGE_H))
+    snapshot.restore()
+    # The scanner pads from just after the sheet's lowest corner.
+    a = math.radians(abs(angle))
+    end = PAGE_H / 2 + 30 + (PAGE_H * math.cos(a) + PAGE_W * math.sin(a)) / 2 + 4
+    snapshot.append_color(padding, Graphene.Rect().init(0, end, SCAN_W, SCAN_H - end))
+    renderer = Gsk.CairoRenderer()
+    renderer.realize_for_display(Gdk.Display.get_default())
+    texture = renderer.render_texture(snapshot.to_node(), area)
+    renderer.unrealize()
+    downloader = Gdk.TextureDownloader.new(texture)
+    downloader.set_format(Gdk.MemoryFormat.R8G8B8)
+    data, stride = downloader.download_bytes()
+    data = data.get_data()
+    scan = b"".join(data[y * stride:y * stride + SCAN_W * 3] for y in range(SCAN_H))
+    # The fake Tesseract reads the orientation from a marker (tests/fake_ocr.py).
+    return rgb_tiff(scan, SCAN_W, SCAN_H) + (b"ROTATE=180" if upside_down else b"")
+
+
+def rgb_tiff(pixels, width=PAGE_W, height=PAGE_H):
     """Uncompressed RGB TIFF, as a scanner sends for lossless scans."""
     offset = 8
-    entries = [(256, 4, [PAGE_W]), (257, 4, [PAGE_H]), (258, 3, [8, 8, 8]), (259, 3, [1]),
-               (262, 3, [2]), (273, 4, [offset]), (277, 3, [3]), (278, 4, [PAGE_H]),
+    entries = [(256, 4, [width]), (257, 4, [height]), (258, 3, [8, 8, 8]), (259, 3, [1]),
+               (262, 3, [2]), (273, 4, [offset]), (277, 3, [3]), (278, 4, [height]),
                (279, 4, [len(pixels)]), (284, 3, [1])]
     out = bytearray(b"II*\x00") + struct.pack("<I", 0) + pixels
     extra = bytearray()
@@ -171,7 +211,9 @@ def main():
     os.environ["LANG"] = "en_US.UTF-8"
 
     Adw.init()
-    pages = [rgb_tiff(render_page(doc)) for doc in DOCUMENTS]
+    rendered = [render_page(doc) for doc in DOCUMENTS]
+    pages = [rgb_tiff(pixels) for pixels in rendered]
+    scans = [render_scan(pixels, *feed) for pixels, feed in zip(rendered, FEEDS)]
     original = fake_wsd.make_tiff
     served = iter(range(10 ** 6))
     fake_wsd.make_tiff = lambda color, **kw: pages[next(served) % len(pages)]
@@ -200,7 +242,8 @@ def main():
                    lossless=True, ocr=True, outdir=out, filename="Invoice {date}")
     wsdscan.save_config({"scanner": "Office"}, scanners={
         "Office": profile,
-        "Office b/w": dict(profile, mode="bw", review_pages=True, skip_blank=True, ocr=False)},
+        "Office review": dict(profile, mode="gray", paper="auto", review_pages=True,
+                              skip_blank=True, deskew=True, auto_rotate=True, ocr=False)},
         sections={"gui": {"width": 520, "height": 940, "last_scanner": "Office"}})
 
     app = wsdscan_gui.ScanApp()
@@ -215,16 +258,22 @@ def main():
     settle()
     save_window(window, os.path.join(out_dir, "main-window.png"))
 
-    # 2. Review step: the blank back page was found and starts unticked.
-    window.scanner_choice.set_value("Office b/w")
-    wait(lambda: window.app.config["scanner"] == "Office b/w" and window.device is not None)
+    # 2. Review step: pages fed in crooked or upside down, cut to the sheet,
+    # straightened and turned upright; the blank back page starts unticked.
+    pages[:] = scans
+    window.scanner_choice.set_value("Office review")
+    wait(lambda: window.app.config["scanner"] == "Office review" and window.device is not None)
     window.on_scan()
     wait(lambda: window.review is not None)
     assert [tile.kept() for tile in window.tiles] == [True, False, True, True]
+    assert [list(tile.correction_buttons) for tile in window.tiles] == [
+        ["crop", "skew"], ["crop"], ["crop", "skew", "rotate"], ["crop", "skew"]], \
+        [list(tile.correction_buttons) for tile in window.tiles]
     settle()
     save_window(window, os.path.join(out_dir, "review-pages.png"))
     window.finish_review(True)
     wait(lambda: window.cancel_event is None)
+    pages[:] = [rgb_tiff(pixels) for pixels in rendered]
 
     # 3. A scanner's page in the preferences.
     window.scanner_choice.set_value("Office")

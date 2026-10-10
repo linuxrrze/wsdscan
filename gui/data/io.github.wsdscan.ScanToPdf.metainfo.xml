@@ -20,6 +20,7 @@
       <li>Optional text recognition (OCR) with OCRmyPDF or Tesseract</li>
       <li>Page preview; remove single pages before saving</li>
       <li>Optionally removes blank pages, e.g. empty backs</li>
+      <li>Finds the paper size, straightens crooked pages and turns them upright</li>
       <li>Status bar icon and start at login</li>
       <li>In English and German</li>
       <li>Shares its settings with the wsdscan command-line tool</li>

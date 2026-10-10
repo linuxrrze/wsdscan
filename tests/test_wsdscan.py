@@ -4,6 +4,7 @@ Run from the repository root:  python3 -m unittest discover -s tests -v
 """
 
 import io
+import math
 import os
 import re
 import subprocess
@@ -25,7 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import wsdscan as tool  # noqa: E402
 from fake_ocr import make_ocr_bin, read_log  # noqa: E402
 from fake_wsd import (JPEG_EXIF, JPEG_GRAY, JPEG_RGB, JPEG_SIZE,  # noqa: E402
-                      FakeScanner, make_jpeg, make_tiff, pack_bw, test_page, tiff_pixels)
+                      FakeScanner, make_jpeg, make_tiff, pack_bw, scanned_sheet, test_page,
+                      tiff_pixels, with_comment)
 import zlib  # noqa: E402
 
 # Profile of the real ES-580W, as observed on the device. Keep in sync with
@@ -51,7 +53,8 @@ def caps(**overrides):
 def args(**overrides):
     base = {"source": "duplex", "mode": "color", "resolution": 300, "paper": "a4",
             "lossless": False, "brightness": None, "contrast": None,
-            "ocr": False, "ocr_engine": "auto", "ocr_lang": None, "skip_blank": False}
+            "ocr": False, "ocr_engine": "auto", "ocr_lang": None, "skip_blank": False,
+            "deskew": False, "auto_rotate": False}
     base.update(overrides)
     return SimpleNamespace(**base)
 
@@ -492,7 +495,7 @@ class BlankPageTest(unittest.TestCase):
             pages, complete, _err = tool.scan_to_file(
                 args(host=fake.host, model=None, skip_blank=True), out,
                 on_progress=lambda event, n: events.append((event, n)),
-                on_page_image=lambda n, data, empty: flags.append(empty))
+                on_page_image=lambda n, data, info: flags.append(info["blank"]))
             with open(out, "rb") as f:
                 self.assertEqual(parse_pdf(f.read())["pages"], 3)
         self.assertEqual((pages, complete), (3, True))
@@ -515,8 +518,8 @@ class BlankPageTest(unittest.TestCase):
         text, blank = make_jpeg(page(marks=[TEXT_LINE])), make_jpeg(page())
         offered = []
 
-        def select(images, empty):
-            offered.append(empty)
+        def select(images, infos):
+            offered.append([info["blank"] for info in infos])
             return list(range(len(images)))  # keep the blank page after all
 
         with tempfile.TemporaryDirectory() as d, FakeScanner(sheets=1, images=[text, blank]) as fake:
@@ -529,6 +532,278 @@ class BlankPageTest(unittest.TestCase):
                                                   os.path.join(d, "b.pdf"), select_pages=select)
             detect.assert_not_called()
         self.assertEqual(offered, [[False, True], [False, False]])
+
+
+# A 75 dpi scan of the whole scan area (8.5 x 15.5 in) with an A6 sheet,
+# tilted, on gray backing; white padding after the sheet (as the ES-580W).
+AREA = (638, 1163)
+SHEET = (300, 330, 438, 620, 3.5)  # cx, cy, w, h, clockwise degrees
+SHEET_TEXT = [(40, 60 + 30 * i, 300, 12, 40) for i in range(8)]
+
+
+def sheet_scan(sheet=SHEET, marks=SHEET_TEXT, **opts):
+    opts.setdefault("pad_from", 720)
+    return make_jpeg(scanned_sheet(*AREA, sheet, marks=marks, **opts))
+
+
+def corrected(**overrides):
+    return args(paper="auto", deskew=True, **overrides)
+
+
+class PageCorrectionTest(unittest.TestCase):
+    def assert_sheet(self, info, sheet, tolerance=6):
+        cx, cy, w, h, angle = info["paper"]
+        for found, wanted in zip((cx, cy, w, h), sheet[:4]):
+            self.assertAlmostEqual(found, wanted, delta=tolerance)
+        self.assertAlmostEqual(angle, sheet[4], delta=0.3)
+
+    def test_finds_tilted_sheet(self):
+        for angle in (-8, -1.5, 0, 3.5, 12):
+            with self.subTest(angle=angle):
+                sheet = SHEET[:4] + (angle,)
+                info = tool.analyze_page(sheet_scan(sheet), corrected(), 75)
+                self.assert_sheet(info, sheet)
+                self.assertTrue(info["crop"])
+                self.assertEqual(info["skew"], 0 if abs(angle) < tool.SKEW_MIN
+                                 else info["paper"][4])
+                self.assertEqual(tool.corrections_done(info),
+                                 ["crop"] + (["skew"] if info["skew"] else []))
+
+    def test_tiff_and_bw_pages(self):
+        rows = scanned_sheet(*AREA, SHEET, marks=SHEET_TEXT, pad_from=720)
+        tiff = make_tiff("Grayscale8", width=AREA[0], height=AREA[1], pixels=b"".join(rows))
+        self.assert_sheet(tool.analyze_page(tiff, corrected(), 75), SHEET)
+        bw = make_tiff("BlackAndWhite1", width=AREA[0], height=AREA[1], pixels=pack_bw(rows))
+        info = tool.analyze_page(bw, corrected(), 75)
+        # Thresholded, backing and padding are as white as the paper: nothing to cut.
+        self.assertIsNone(info["paper"])
+
+    def test_only_padding_cut_without_contrast(self):
+        # White backing: the sheet cannot be told apart; only the padding goes.
+        info = tool.analyze_page(sheet_scan(backing=235, pad_from=700), corrected(), 75)
+        cx, cy, w, h, angle = info["paper"]
+        self.assertEqual((angle, info["skew"]), (0.0, 0.0))
+        self.assertAlmostEqual(h, 700, delta=10)
+        self.assertEqual(w, AREA[0])
+
+    def test_nothing_found_on_plain_backing(self):
+        rows = scanned_sheet(*AREA, (0, 0, 0, 0, 0), pad_from=None)
+        info = tool.analyze_page(make_jpeg(rows), corrected(), 75)
+        self.assertIsNone(info["paper"])
+        info = tool.analyze_page(make_jpeg(test_page(*AREA)), corrected(), 75)
+        self.assertIsNone(info["paper"], "a full-size sheet: nothing to cut")
+        self.assertEqual(tool.corrections_done(info), [])
+
+    def test_settings_off(self):
+        data = sheet_scan()
+        info = tool.analyze_page(data, args(), 75)
+        self.assertEqual(tool.corrections_done(info), [])
+        straighten = tool.analyze_page(data, args(deskew=True), 75)
+        self.assertEqual(tool.corrections_done(straighten), ["skew"], "fixed size: no crop")
+
+    def test_blank_sheet_on_backing(self):
+        blank = tool.analyze_page(sheet_scan(marks=()), corrected(skip_blank=True), 75)
+        self.assertTrue(blank["blank"], "the backing around the sheet is no ink")
+        text = tool.analyze_page(sheet_scan(marks=SHEET_TEXT[:1]), corrected(skip_blank=True), 75)
+        self.assertFalse(text["blank"])
+
+    def test_layout_straightens_and_cuts(self):
+        info = tool.analyze_page(sheet_scan(), corrected(), 75)
+        cx, cy, w, h, angle = info["paper"]
+        page_w, page_h, place = tool.page_layout(info)
+        self.assertEqual((page_w, page_h), (w, h))
+        a = math.radians(angle)
+        # The sheet's corners (tilted in the scan) land on the page's corners.
+        for sx, sy, ex, ey in ((-1, -1, 0, 0), (1, -1, w, 0), (1, 1, w, h), (-1, 1, 0, h)):
+            x = cx + sx * w / 2 * math.cos(a) - sy * h / 2 * math.sin(a)
+            y = cy + sx * w / 2 * math.sin(a) + sy * h / 2 * math.cos(a)
+            px, py = place(x, y)
+            self.assertAlmostEqual(px, ex, delta=0.01)
+            self.assertAlmostEqual(py, ey, delta=0.01)
+
+    def test_layout_per_correction(self):
+        info = tool.analyze_page(sheet_scan(), corrected(), 75)
+        info["rotate"] = 90
+        page_w, page_h, place = tool.page_layout(info)
+        self.assertEqual((page_w, page_h), (info["paper"][3], info["paper"][2]), "turned")
+        info["use"]["rotate"] = False
+        info["use"]["skew"] = False
+        page_w, page_h, place = tool.page_layout(info)
+        self.assertGreater(page_w, info["paper"][2], "the tilted sheet's upright box")
+        self.assertEqual(place(10, 10)[0] - place(0, 10)[0], 10, "not turned")
+        info["use"]["crop"] = False
+        self.assertEqual(tool.page_layout(info)[:2], AREA)
+        info["use"]["skew"] = True  # straightened within the whole image
+        page_w, page_h, place = tool.page_layout(info)
+        self.assertEqual((page_w, page_h), AREA)
+        self.assertNotAlmostEqual(place(100, 0)[1], place(0, 0)[1])
+
+    def test_turned_by_hand(self):
+        info = tool.analyze_page(sheet_scan(), corrected(), 75)
+        self.assertEqual(info["turn"], 0)
+        w, h = info["paper"][2:4]
+        info["turn"] = 270
+        self.assertEqual(tool.page_layout(info)[:2], (h, w))
+        info["rotate"] = 180  # upright, then by hand
+        self.assertEqual(tool.page_turn(info), 90)
+        info["use"]["rotate"] = False
+        self.assertEqual(tool.page_turn(info), 270)
+        # Text runs as turned by hand, also if orientation detection was unsure.
+        info.update(paper=None, orientation=0, turn=90)
+        ops = tool.text_layer([("Hi", 100, 200, 20, 60)], info)
+        self.assertIn("0 -1 -1 0 120 260 Tm", ops)
+
+    def test_pdf_page_follows_layout(self):
+        data = sheet_scan()
+        info = tool.analyze_page(data, corrected(), 75)
+        pdf = tool.pdf_bytes([data, data], 75, [info, dict(info, use={})])
+        boxes = parse_pdf(pdf)["mediaboxes"]
+        w, h = info["paper"][2:4]
+        self.assertAlmostEqual(boxes[0][0], w * 72 / 75, delta=0.01)
+        self.assertAlmostEqual(boxes[0][1], h * 72 / 75, delta=0.01)
+        self.assertEqual(boxes[1], (AREA[0] * 72 / 75, AREA[1] * 72 / 75), "corrections off")
+        self.assertEqual(len(parse_pdf(pdf)["streams"]), 2, "the scan is embedded unchanged")
+        self.assertIn(data, pdf)
+
+    def test_text_follows_reading_direction(self):
+        """OCR words (boxes in the scan) read left to right on the corrected page."""
+        for turn in (0, 90, 180, 270):
+            with self.subTest(turn=turn):
+                info = {"size": (1000, 800), "paper": None, "crop": False, "skew": 0.0,
+                        "rotate": turn, "use": {"rotate": True}}
+                ops = tool.text_layer([("Hi", 100, 200, 60, 20) if turn in (0, 180)
+                                       else ("Hi", 100, 200, 20, 60)], info)
+                m = re.search(r"([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+) Tm", ops)
+                a, b, c, d, e, f = (float(v) for v in m.groups())
+                _w, _h, place = tool.page_layout(info)
+                x0, y0 = place(e, f)
+                x1, y1 = place(e + a, f + b)  # one unit along the text
+                xu, yu = place(e + c, f + d)  # one unit "up" in glyph space
+                self.assertAlmostEqual(x1 - x0, 1, delta=1e-6)
+                self.assertAlmostEqual(y1 - y0, 0, delta=1e-6)
+                self.assertAlmostEqual(yu - y0, -1, delta=1e-6, msg="glyphs upright (y down)")
+                # The baseline start is the word's lower left corner on the page.
+                corners = [place(x, y) for x in (100, 160 if turn in (0, 180) else 120)
+                           for y in (200, 220 if turn in (0, 180) else 260)]
+                self.assertAlmostEqual(x0, min(p[0] for p in corners), delta=1e-6)
+                self.assertAlmostEqual(y0, max(p[1] for p in corners), delta=1e-6)
+
+    def test_parse_tsv(self):
+        tsv = ("level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n"
+               "1\t1\t0\t0\t0\t0\t0\t0\t100\t100\t-1\t\n"
+               "5\t1\t1\t1\t1\t1\t10\t20\t30\t40\t96\tGrüße\n"
+               "5\t2\t1\t1\t1\t1\t1\t2\t3\t4\t90\tzwei\n"
+               "5\t2\t1\t1\t1\t2\t1\t2\t0\t4\t90\tleer\n"
+               "5\t2\t1\t1\t1\t3\t1\t2\t3\t4\t90\t \n")
+        self.assertEqual(tool.parse_tsv(tsv), {1: [("Grüße", 10, 20, 30, 40)],
+                                               2: [("zwei", 1, 2, 3, 4)]})
+        with self.assertRaisesRegex(tool.ScanError, "unreadable"):
+            tool.parse_tsv("a\tb\n1\t2\n")
+
+    def test_auto_size_scan(self):
+        data = sheet_scan()
+        with tempfile.TemporaryDirectory() as d, \
+                FakeScanner(sheets=2, images=[data], max_size=(8500, 15500)) as fake:
+            out = os.path.join(d, "out.pdf")
+            events = []
+            tool.scan_to_file(corrected(host=fake.host, model=None, source="adf"), out,
+                              on_progress=lambda event, n: events.append((event, n)))
+            with open(out, "rb") as f:
+                pdf = parse_pdf(f.read())
+        self.assertIn("<wscn:Width>8500</wscn:Width><wscn:Height>15500</wscn:Height>",
+                      fake.tickets[0], "the whole scan area")
+        self.assertEqual(pdf["pages"], 2)
+        for box in pdf["mediaboxes"]:  # (the fake reports 300 dpi for the 75 dpi image)
+            self.assertAlmostEqual(box[0], 438 * 72 / 300, delta=3)
+            self.assertAlmostEqual(box[1], 620 * 72 / 300, delta=3)
+        self.assertEqual([e for e in events if e[0] == "corrected"], [("corrected", 1),
+                                                                      ("corrected", 2)])
+
+    def test_review_switches_corrections_off(self):
+        data = sheet_scan()
+
+        def select(images, infos):
+            infos[1]["use"]["crop"] = False
+            infos[1]["use"]["skew"] = False
+            return [0, 1]
+
+        with tempfile.TemporaryDirectory() as d, FakeScanner(sheets=2, images=[data]) as fake:
+            out = os.path.join(d, "out.pdf")
+            tool.scan_to_file(corrected(host=fake.host, model=None, source="adf"), out,
+                              select_pages=select)
+            with open(out, "rb") as f:
+                boxes = parse_pdf(f.read())["mediaboxes"]
+        self.assertAlmostEqual(boxes[0][0], 438 * 72 / 300, delta=3)
+        self.assertEqual(boxes[1], (AREA[0] * 72 / 300, AREA[1] * 72 / 300))
+
+    def test_empty_image_ends_the_job(self):
+        with tempfile.TemporaryDirectory() as d, FakeScanner(sheets=2, end_with_empty=True) as fake:
+            pages, complete, _err = tool.scan_to_file(args(host=fake.host, model=None, source="adf"),
+                                                      os.path.join(d, "out.pdf"))
+        self.assertEqual((pages, complete), (2, True))
+
+    def test_auto_paper_without_reported_size(self):
+        ticket = tool.scan_ticket("adf", "color", 300, "auto", caps(max_size=None))
+        self.assertIn("<wscn:Width>8500</wscn:Width><wscn:Height>14000</wscn:Height>", ticket)
+
+
+class OrientationTest(unittest.TestCase):
+    """Turning pages upright with the fake Tesseract's orientation detection."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.log = os.path.join(self.dir.name, "ocr.log")
+        env = mock.patch.dict(os.environ, {"FAKE_OCR_LOG": self.log,
+                                           "PATH": make_ocr_bin(os.path.join(self.dir.name, "bin"),
+                                                                ["tesseract"])})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("FAKE_NO_OSD", None)
+
+    def scan(self, images, **overrides):
+        out = os.path.join(self.dir.name, "out.pdf")
+        infos = []
+        with FakeScanner(sheets=len(images), images=images) as fake:
+            tool.scan_to_file(args(host=fake.host, model=None, source="adf", **overrides), out,
+                              on_page_image=lambda n, data, info: infos.append(info))
+        with open(out, "rb") as f:
+            return infos, parse_pdf(f.read())
+
+    def test_pages_turned_upright(self):
+        upright = make_jpeg(test_page(80, 120, marks=[(10, 10, 50, 8, 30)]))
+        sideways = with_comment(upright, b"ROTATE=90")
+        infos, pdf = self.scan([upright, sideways], auto_rotate=True)
+        self.assertEqual([i["rotate"] for i in infos], [0, 90])
+        self.assertEqual(pdf["mediaboxes"], [(80 * 72 / 300, 120 * 72 / 300),
+                                             (120 * 72 / 300, 80 * 72 / 300)])
+        calls = read_log(self.log, osd=True)
+        self.assertEqual([c[0] for c in calls], ["tesseract-osd"] * 2)
+        self.assertEqual(calls[0][2:], ["-", "--psm", "0", "--dpi", "300"])
+
+    def test_unsure_pages_stay(self):
+        handwriting = make_jpeg(test_page(80, 120))  # no marker: "Too few characters"
+        infos, _pdf = self.scan([handwriting], auto_rotate=True)
+        self.assertEqual(infos[0]["rotate"], 0)
+
+    def test_not_detected_unless_wanted(self):
+        infos, _pdf = self.scan([with_comment(JPEG_GRAY, b"ROTATE=180")])
+        self.assertEqual(infos[0]["rotate"], 0)
+        self.assertEqual(read_log(self.log, osd=True), [])
+
+    def test_ocr_text_direction_without_turning(self):
+        # Tesseract OCR: orientation is detected for the text, the page stays.
+        infos, _pdf = self.scan([with_comment(JPEG_GRAY, b"ROTATE=180")], ocr=True,
+                                ocr_engine="tesseract", ocr_lang="eng")
+        self.assertEqual((infos[0]["rotate"], infos[0]["orientation"]), (0, 180))
+
+    def test_needs_orientation_data(self):
+        os.environ["FAKE_NO_OSD"] = "1"
+        with FakeScanner(sheets=1) as fake, \
+                self.assertRaisesRegex(tool.ScanError, "tesseract-ocr-osd"):
+            tool.scan_to_file(args(host=fake.host, model=None, auto_rotate=True),
+                              os.path.join(self.dir.name, "x.pdf"))
+        self.assertEqual(fake.tickets, [], "checked before scanning")
 
 
 class ConfigTestBase(unittest.TestCase):
@@ -877,11 +1152,16 @@ class OcrTest(unittest.TestCase):
         self.use_engines("tesseract")
         (pages, _c, error), data, _fake = self.scan(mode="bw", ocr_lang="eng")
         self.assertIsNone(error)
-        self.assertEqual(data, b"%PDF-1.4 fake tesseract output lang=eng pages=2\n")
         call = read_log(self.log)[0]
         files = call[call.index("PAGES") + 1:]
         self.assertEqual([os.path.basename(f) for f in files], ["page001.tif", "page002.tif"])
-        self.assertEqual(call[3:8], ["-l", "eng", "--dpi", "300", "pdf"])
+        self.assertEqual(call[3:10], ["-l", "eng", "--dpi", "300", "--psm", "1", "tsv"])
+        # The words go into this tool's own PDF, as invisible text over the scans.
+        self.assertEqual(parse_pdf(data)["pages"], 2)
+        self.assertIn(b"/GlyphLessFont", data)
+        for n in (1, 2):
+            self.assertIn("".join(f"{ord(c):04X}" for c in f"eng-page{n}").encode(), data)
+        self.assertIn(b"3 Tr", data)
 
     def test_ocr_page_progress_with_tesseract(self):
         self.use_engines("tesseract")

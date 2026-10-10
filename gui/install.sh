@@ -65,7 +65,7 @@ if [ "$MODE" = dist ]; then
 	mkdir -p "$STAGE/$NAME/data"
 	cp -L "$SRC_CLI" "$HERE/wsdscan_gui.py" "$HERE/scanform.py" "$HERE/tray.py" "$HERE/i18n.py" \
 		"$HERE/install.sh" "$HERE/README.md" "$STAGE/$NAME/"
-	cp "$HERE/data/"* "$STAGE/$NAME/data/"
+	cp -R "$HERE/data/"* "$STAGE/$NAME/data/"
 	mkdir -p "$STAGE/$NAME/po"
 	cp "$HERE/po/"*.po "$STAGE/$NAME/po/"
 	tar -C "$STAGE" -czf "$PWD/$NAME.tar.gz" "$NAME"
@@ -135,9 +135,10 @@ fi
 
 mkdir -p "$LIB" "$BIN" "$APPS" "$ICONS/scalable/apps" "$ICONS/symbolic/apps" "$META"
 cp -L "$SRC_CLI" "$HERE/wsdscan_gui.py" "$HERE/scanform.py" "$HERE/tray.py" "$HERE/i18n.py" "$LIB/"
-rm -rf "$LIB/po"  # languages removed since the last install
-mkdir -p "$LIB/po"
+rm -rf "$LIB/po" "$LIB/data"  # languages and icons removed since the last install
+mkdir -p "$LIB/po" "$LIB/data/icons"
 cp "$HERE/po/"*.po "$LIB/po/"
+cp "$HERE/data/icons/"*.svg "$LIB/data/icons/"  # page correction icons
 PYTHON=$(command -v python3)
 printf '#!/bin/sh\nexec %s %s "$@"\n' "$(shell_quote "$PYTHON")" \
 	"$(shell_quote "$LIB/wsdscan_gui.py")" > "$BIN/wsdscan-gui"

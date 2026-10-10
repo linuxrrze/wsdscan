@@ -33,7 +33,7 @@ def args(**overrides):
     base = {"source": "adf", "mode": "color", "resolution": 300, "paper": "a4",
             "lossless": False, "brightness": None, "contrast": None, "ocr": False,
             "ocr_engine": "auto", "ocr_lang": None, "host": None, "model": None,
-            "skip_blank": False}
+            "skip_blank": False, "deskew": False, "auto_rotate": False}
     base.update(overrides)
     return SimpleNamespace(**base)
 

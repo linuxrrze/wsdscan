@@ -27,7 +27,8 @@ VERSION = "1.3.2"
 # (value, label) pairs in display order.
 SOURCES = [("duplex", _("Both sides")), ("adf", _("One side"))]
 MODES = [("color", _("Color")), ("gray", _("Grayscale")), ("bw", _("Black & white"))]
-PAPERS = [("a4", "A4"), ("a5", "A5"), ("letter", "Letter"), ("legal", "Legal")]
+PAPERS = [("auto", _("Automatic")), ("a4", "A4"), ("a5", "A5"), ("letter", "Letter"),
+          ("legal", "Legal")]
 OCR_ENGINES = [("auto", _("Automatic")), ("ocrmypdf", "OCRmyPDF"), ("tesseract", "Tesseract")]
 DEFAULT_RESOLUTIONS = [100, 150, 200, 300, 600]
 
@@ -99,15 +100,19 @@ class OcrStatus:
     INSTALL_HINT = _("Install OCRmyPDF or Tesseract to enable text recognition, "
                      "e.g. “sudo apt install ocrmypdf”.")
 
-    def __init__(self, engines, languages):
+    OSD_HINT = _("Needs Tesseract with orientation data, e.g. "
+                 "“sudo apt install tesseract-ocr-osd”.")
+
+    def __init__(self, engines, languages, osd=False):
         self.engines = engines            # installed engine names, preferred first
         self.languages = languages        # installed Tesseract languages
         self.default_lang = wsdscan.default_ocr_languages(languages)
+        self.osd = osd                    # Tesseract can detect page orientation
 
     @classmethod
     def detect(cls):
         return cls([name for name, _path in wsdscan.ocr_engines()],
-                   wsdscan.tesseract_languages())
+                   wsdscan.tesseract_languages(), wsdscan.tesseract_osd_available())
 
     @property
     def available(self):
@@ -220,6 +225,10 @@ def settings_summary(values, review=False):
         parts.append(_("OCR"))
     if values.get("skip_blank"):
         parts.append(_("remove blank pages"))
+    if values.get("deskew"):
+        parts.append(_("straighten"))
+    if values.get("auto_rotate"):
+        parts.append(_("turn upright"))
     if review:
         parts.append(_("review pages"))
     return " · ".join(parts)
@@ -313,7 +322,30 @@ def scan_args(values):
         ocr_engine=values.get("ocr_engine") or "auto",
         ocr_lang=values.get("ocr_lang") or None,
         skip_blank=bool(values.get("skip_blank")),
+        deskew=bool(values.get("deskew")),
+        auto_rotate=bool(values.get("auto_rotate")),
     )
+
+
+# Icons and tooltips of the corrections shown on a page preview.
+CORRECTION_ICONS = {"crop": "wsdscan-crop-symbolic", "skew": "wsdscan-straighten-symbolic",
+                    "rotate": "wsdscan-upright-symbolic"}
+TURN_ICONS = {-90: "wsdscan-turn-left-symbolic", 90: "wsdscan-turn-right-symbolic"}
+
+
+def correction_tooltip(name, info, dpi, applied):
+    """Tooltip of a page's correction icon, e.g. 'Straightened by 3.4°'."""
+    if name == "crop":
+        _cx, _cy, width, height, _angle = info["paper"]
+        text = _("Cut to the sheet: {w} × {h} mm").format(
+            w=round(width / dpi * 25.4), h=round(height / dpi * 25.4))
+    elif name == "skew":
+        text = _("Straightened by {angle}°").format(angle=f"{abs(info['skew']):.1f}")
+    else:
+        text = _("Turned upright by {angle}°").format(angle=info["rotate"])
+    if not applied:
+        text = _("{correction} (off)").format(correction=text)
+    return text
 
 
 def output_path(folder, name):

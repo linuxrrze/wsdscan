@@ -40,6 +40,7 @@ export WSDSCAN_HOST=192.168.2.13     # or pass --host each time
 ./wsdscan.py --brightness 200 --contrast 100 faint.pdf
 ./wsdscan.py --ocr letter.pdf         # searchable PDF (needs OCRmyPDF or Tesseract)
 ./wsdscan.py --skip-blank mixed.pdf   # leave out the empty backs of one-sided pages
+./wsdscan.py -p auto --deskew --auto-rotate receipts.pdf  # any size, straight, upright
 ./wsdscan.py -p letter --outdir ~/Scans
 ./wsdscan.py -v                   # show the protocol steps
 ```
@@ -59,11 +60,13 @@ Defaults below are the built-in ones; the [config file](#configuration-file) can
 | `--brightness N` | scanner default | −1000 … 1000, or `default`; experimental |
 | `--contrast N` | scanner default | −1000 … 1000, or `default`; experimental |
 | `-r/--resolution` | `300` | dpi; checked against what the scanner reports |
-| `-p/--paper` | `a4` | `a4`, `a5`, `letter`, `legal` |
+| `-p/--paper` | `a4` | `auto`, `a4`, `a5`, `letter`, `legal`; `auto` cuts each page to its sheet (see below) |
 | `-i/--info` | | print capabilities and status, then exit |
 | `-c/--check` | | test mode: `--info` plus scanner-side validation of every setting combination; no scan |
 | `--ocr` / `--no-ocr` | off | recognize text so the PDF is searchable (see below) |
 | `--skip-blank` / `--no-skip-blank` | off | remove blank pages, e.g. empty backs in a duplex scan (see below) |
+| `--deskew` / `--no-deskew` | off | straighten pages that were fed in crooked (see below) |
+| `--auto-rotate` / `--no-auto-rotate` | off | turn pages that are sideways or upside down upright; needs Tesseract with orientation data |
 | `--ocr-engine` | `auto` | `auto` (OCRmyPDF if installed, else Tesseract), `ocrmypdf`, `tesseract` |
 | `--ocr-lang` | installed languages (see below) | Tesseract languages, e.g. `deu+eng` |
 | `--show-config` | | show the config file location, the effective defaults and the installed OCR engines and languages |
@@ -105,6 +108,17 @@ With `--skip-blank`, pages without content are left out of the PDF, e.g. the emp
 - **When in doubt, a page is kept:** pages it can't analyze (e.g. progressive JPEGs, which WSD scanners don't normally send) and pages with a lot of detail are never removed. If every page is blank, all are kept, with a warning.
 - It needs no extra programs, and takes up to about a second per page at 300 dpi while the next page is being scanned.
 - In the desktop app, blank pages start unticked in the review step, so you can keep them after all.
+
+### Paper size, straightening and orientation
+
+Many scanners can find the paper size themselves, but not over WSD (the ES-580W rejects it there), so this tool does it on the scanned image, for any scanner:
+
+- **`--paper auto`** scans the scanner's whole scan area and cuts each page to its sheet: receipts, A5 and A4 can be mixed in one stack. The sheet is found because it is brighter than the feeder's backing (gray or black on most document feeders); a stretch of one color after the sheet (the ES-580W fills the rest of the length with white) is cut off too. With a white backing, or in black & white (where the backing turns white), the sheet can't be told apart: then the page keeps the full size.
+- **`--deskew`** straightens pages that were fed in crooked (up to 20°), from the sheet's edges. It needs the sheet's edges in the image, so it works best with `--paper auto`.
+- **`--auto-rotate`** turns pages that are sideways or upside down upright. It uses Tesseract's orientation detection (packages `tesseract-ocr` and `tesseract-ocr-osd`), about a second per page while the next one is scanned. Pages with too little printed text, e.g. handwriting, stay as they are.
+- **The scans themselves are not changed:** each image is embedded as the scanner sent it, and the PDF places, turns and cuts it to the page. Nothing is re-compressed, and the text from `--ocr` lines up with the corrected page.
+- The tool prints what it did, e.g. `page 2: 105 x 148 mm, straightened by 3.4°, turned 180°`.
+- In the desktop app, each page preview shows an icon per correction; in the review step a click switches it off or on again, and two buttons turn a page by 90° left or right by hand.
 
 ### Configuration file
 
@@ -176,7 +190,8 @@ Measured with `--info` (firmware 13.SW19PB):
 - **Color modes:** color, gray and black & white
 - **Formats:** JPEG (`exif`, quality fixed at 50) and uncompressed TIFF
 - **Paper size:** up to 8.5 × 15.5 in
-- **Fixed settings:** automatic paper size off, rotation 0° only, scaling 100% only, content type "Text" only
+- **Fixed settings:** automatic paper size off, rotation 0° only, scaling 100% only, content type "Text" only; a scan ticket asking for automatic paper size is rejected (use `--paper auto`, which works on the image)
+- **End of a job:** at the full scan length (8.5 × 15.5 in, `--paper auto`) it ends the job with an empty image instead of the usual "no more images" answer; the tool treats that as the end
 
 ## Test mode
 

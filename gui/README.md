@@ -6,7 +6,7 @@ It uses GTK 4 and libadwaita, so it looks native on GNOME and Ubuntu Desktop. On
 
 | After a scan, with text recognition | Reviewing pages before saving | A scanner's settings |
 |---|---|---|
-| ![Main window after a scan](../docs/screenshots/main-window.png) | ![Review step with a blank page unticked](../docs/screenshots/review-pages.png) | ![Scanner page in the preferences](../docs/screenshots/scanner-settings.png) |
+| ![Main window after a scan](../docs/screenshots/main-window.png) | ![Review step: pages cut, straightened and turned upright; a blank page unticked](../docs/screenshots/review-pages.png) | ![Scanner page in the preferences](../docs/screenshots/scanner-settings.png) |
 
 ## Install
 
@@ -49,7 +49,7 @@ tar -xzf scan-to-pdf-<version>.tar.gz && cd scan-to-pdf-<version> && ./install.s
 1. Put the pages in the scanner's document feeder.
 2. Open **Scan to PDF**. It connects to your scanner and shows it at the top. With several scanners configured, choose one in the **Scanner** selector; the app starts with the one used last. Without any configured, it uses the one it finds on the network.
 3. Check the file name and folder. The **Scan settings** row shows the current settings, e.g. "Both sides · Color · 300 dpi · A4". Click it (or press Ctrl+E) to change them in a separate dialog:
-   - The dialog has sides, color, resolution, paper size, lossless, brightness/contrast, **Recognize text (OCR)**, **Remove blank pages** and **Review pages before saving**. It only offers what your scanner supports.
+   - The dialog has sides, color, resolution, paper size (including **Automatic**), lossless, brightness/contrast, **Recognize text (OCR)**, **Remove blank pages**, **Straighten pages**, **Turn pages upright** and **Review pages before saving**. It only offers what your scanner supports.
    - Changes apply to the next scans.
    - **Save for This Scanner** keeps them as the scanner's settings, also for `wsdscan --scanner NAME`. Without a configured scanner the button is **Save as Defaults**.
    - **Reset to Defaults** goes back to the saved settings.
@@ -59,9 +59,13 @@ tar -xzf scan-to-pdf-<version>.tar.gz && cd scan-to-pdf-<version> && ./install.s
 5. With **Review pages before saving** switched on (Scan settings; default off, i.e. every page is processed), the app pauses after the last page:
    - Untick the pages you don't want, then click **Save** (or press Enter in the file name). You can still change the file name and folder now.
    - With **Remove blank pages** on, blank pages already start unticked; tick one to keep it after all.
+   - Each correction made to a page shows as an icon on its thumbnail: cut to the sheet (paper size **Automatic**), straightened, turned upright. Click an icon to switch that correction off for this page (the thumbnail shows the result), and again to switch it back on. The tooltip says what was done, e.g. "Straightened by 3.4°". This works until you click **Save**; also while the pages are still being scanned.
+   - To turn a page by hand, use the two buttons at the top left of its thumbnail: **Turn left** and **Turn right** (90° each). This comes on top of the corrections, e.g. for a page that **Turn pages upright** couldn't judge, and also works without that switch.
    - Only the kept pages are saved and passed to text recognition.
    - **Discard Scan** saves nothing.
 6. With **Remove blank pages** on and no review, blank pages are left out of the PDF right away: their thumbnails are dimmed and the message after saving says how many were removed. How pages are judged blank is described in [Blank pages](../README.md#blank-pages).
+
+   Without review, the corrections are applied as found; the icons on the thumbnails show which. How the paper size, straightening and orientation are found is described in [Paper size, straightening and orientation](../README.md#paper-size-straightening-and-orientation). **Turn pages upright** needs Tesseract with its orientation data (`sudo apt install tesseract-ocr tesseract-ocr-osd`); without it the switch is greyed out.
 7. With text recognition on, the thumbnails show the state of each page: waiting, in progress, done (✓). The counter shows "Recognizing text: page 2 of 4". This per-page counter works with **Tesseract**. **OCRmyPDF** doesn't report single pages, so with it the app shows overall progress only and marks all pages done at the end.
 
 When the scan is done:
@@ -129,7 +133,7 @@ Every scanner has **its own settings**. Different scanners can be set up differe
   - **Name:** editable. While you haven't typed one, the name of the scanner found at the address ("EPSON ES-580W") is proposed.
   - **Device:** what was found at that address.
   - **Use by default.**
-- **Scan settings:** sides, color, resolution, paper size, lossless, brightness/contrast, text recognition on/off, remove blank pages, review pages. Once the device has answered, only what it supports is offered.
+- **Scan settings:** sides, color, resolution, paper size, lossless, brightness/contrast, text recognition on/off, remove blank pages, straighten pages, turn pages upright, review pages. Once the device has answered, only what it supports is offered.
 - **Text recognition (OCR):** engine (Automatic, OCRmyPDF, Tesseract) and languages. **Choose languages automatically** is on by default and shows its current result. Turn it off to pick languages from the installed ones.
 - **Saving:** folder, file-name template (`{date}`, `{time}`).
 - **Duplicate** (a copy to configure differently) and **Remove Scanner**.
@@ -175,7 +179,7 @@ last_scanner = Office color
 | `source` | `duplex`, `adf` | `adf` = one side |
 | `mode` | `color`, `gray`, `bw` | black & white is always lossless |
 | `resolution` | dpi, e.g. `300` | the scanner decides which values are allowed |
-| `paper` | `a4`, `a5`, `letter`, `legal` | |
+| `paper` | `auto`, `a4`, `a5`, `letter`, `legal` | `auto`: the whole scan area, each page cut to its sheet |
 | `lossless` | `true`, `false` | color/gray without JPEG compression |
 | `brightness`, `contrast` | −1000 … 1000, or `default` | experimental |
 | `outdir` | a folder, or empty | empty: the app uses your Documents folder, the command the current directory |
@@ -184,6 +188,8 @@ last_scanner = Office color
 | `ocr_engine` | `auto`, `ocrmypdf`, `tesseract` | `auto` prefers OCRmyPDF |
 | `ocr_lang` | e.g. `deu+eng`, or empty | empty = automatic: all installed languages (system language and English first); only those two if more than 4 are installed |
 | `skip_blank` | `true`, `false` | remove blank pages (`--skip-blank`); in the app's review step they start unticked |
+| `deskew` | `true`, `false` | straighten pages fed in crooked (`--deskew`) |
+| `auto_rotate` | `true`, `false` | turn pages upright (`--auto-rotate`); needs Tesseract with orientation data |
 | `review_pages` | `true`, `false` | app only: review the pages before saving and OCR; the command ignores it |
 
 All keys except `scanner` can be set per scanner in `[scanner NAME]`; a scanner's values take precedence over `[scan]`. See [Multiple scanners](../README.md#multiple-scanners) in the main README.

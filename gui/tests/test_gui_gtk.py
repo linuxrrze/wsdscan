@@ -5,6 +5,7 @@ available (run it on a desktop, or under `xvfb-run`).
 """
 
 import os
+import re
 import socket
 import sys
 import tempfile
@@ -36,7 +37,14 @@ if GTK_OK:
 
 import scanform  # noqa: E402
 import wsdscan  # noqa: E402
-from fake_wsd import FakeScanner, make_jpeg, test_page  # noqa: E402
+from fake_wsd import FakeScanner, make_jpeg, scanned_sheet, test_page  # noqa: E402
+
+
+def iter_children(widget):
+    child = widget.get_first_child()
+    while child:
+        yield child
+        child = child.get_next_sibling()
 
 
 def wait_for(check, timeout=20.0):
@@ -394,6 +402,99 @@ class GtkTest(unittest.TestCase):
         files = os.listdir(out_dir)
         with open(os.path.join(out_dir, files[0]), "rb") as f:
             self.assertEqual(f.read().count(b"/Type /Page "), 2)
+
+    def sheet_jpeg(self):
+        """A tilted A6 sheet on gray backing in a 75 dpi scan of the whole scan area."""
+        return make_jpeg(scanned_sheet(638, 1163, (300, 330, 438, 620, 3.5), pad_from=720,
+                                       marks=[(40, 60 + 30 * i, 300, 12, 40) for i in range(8)]))
+
+    def test_corrections_switched_in_review(self):
+        with FakeScanner(model="ES-580W", sheets=1, images=[self.sheet_jpeg()]) as fake:
+            _app, window, out_dir = self.start_app(fake, paper="auto", deskew=True,
+                                                   review_pages=True, source="duplex")
+            self.assertEqual(window.settings.paper.get_value(), "auto")
+            self.assertTrue(window.settings.values()["deskew"])
+            window.on_scan()
+            wait_for(lambda: window.review is not None)
+            first, second = window.tiles
+            self.assertEqual(list(first.correction_buttons), ["crop", "skew"])
+            crop = first.correction_buttons["crop"]
+            self.assertTrue(crop.get_sensitive() and crop.get_active())
+            self.assertRegex(crop.get_tooltip_text(), r"^Cut to the sheet: \d+ × \d+ mm$")
+            self.assertEqual(first.correction_buttons["skew"].get_tooltip_text(),
+                             "Straightened by 3.5°")
+            sheet_ratio = first.paintable.do_get_intrinsic_aspect_ratio()
+            self.assertAlmostEqual(sheet_ratio, 438 / 620, delta=0.03, msg="preview shows the sheet")
+            # Whole scan area for the second page, as scanned.
+            second.correction_buttons["crop"].set_active(False)
+            second.correction_buttons["skew"].set_active(False)
+            self.assertEqual(second.info["use"], {"crop": False, "skew": False, "rotate": True})
+            self.assertAlmostEqual(second.paintable.do_get_intrinsic_aspect_ratio(), 638 / 1163,
+                                   delta=0.01)
+            self.assertTrue(second.correction_buttons["crop"].get_tooltip_text().endswith("(off)"))
+            window.finish_review(True)
+            wait_for(lambda: window.cancel_event is None)
+            self.assertFalse(crop.get_sensitive(), "saved: shown, but no longer switchable")
+            window.close()
+        with open(os.path.join(out_dir, os.listdir(out_dir)[0]), "rb") as f:
+            boxes = [tuple(float(v) for v in m.split()) for m in
+                     re.findall(rb"/MediaBox \[0 0 ([\d. ]+)\]", f.read())]
+        self.assertAlmostEqual(boxes[0][0], 438 * 72 / 300, delta=3)
+        self.assertEqual(boxes[1], (638 * 72 / 300, 1163 * 72 / 300))
+
+    def test_pages_turned_by_hand_in_review(self):
+        with FakeScanner(model="ES-580W", sheets=1) as fake:
+            _app, window, out_dir = self.start_app(fake, review_pages=True, source="duplex")
+            window.on_scan()
+            wait_for(lambda: window.review is not None)
+            first, second = window.tiles
+            self.assertTrue(first.turn_buttons.get_visible())
+            left, right = list(iter_children(first.turn_buttons))
+            self.assertEqual((left.get_tooltip_text(), right.get_tooltip_text()),
+                             ("Turn left", "Turn right"))
+            upright = first.paintable.do_get_intrinsic_aspect_ratio()
+            right.emit("clicked")
+            self.assertEqual(first.info["turn"], 90)
+            self.assertAlmostEqual(first.paintable.do_get_intrinsic_aspect_ratio(), 1 / upright)
+            second.turn(-90)
+            second.turn(-90)
+            self.assertEqual(second.info["turn"], 180)
+            window.finish_review(True)
+            wait_for(lambda: window.cancel_event is None)
+            self.assertFalse(first.turn_buttons.get_visible(), "saved: no longer turnable")
+            window.close()
+        with open(os.path.join(out_dir, os.listdir(out_dir)[0]), "rb") as f:
+            data = f.read()
+        boxes = [tuple(float(v) for v in m.split()) for m in
+                 re.findall(rb"/MediaBox \[0 0 ([\d. ]+)\]", data)]
+        self.assertEqual(boxes[1], (boxes[0][1], boxes[0][0]), "the first page turned sideways")
+        self.assertRegex(data, rb"q 0 -[\d.]+ [\d.]+ 0 0 [\d.]+ cm /Im0", "turned right")
+        self.assertRegex(data, rb"q -[\d.]+ 0 0 -[\d.]+ [\d.]+ [\d.]+ cm /Im0", "upside down")
+
+    def test_corrections_shown_without_review(self):
+        with FakeScanner(model="ES-580W", sheets=1, images=[self.sheet_jpeg()]) as fake:
+            _app, window, _out = self.start_app(fake, paper="auto", source="adf")
+            window.on_scan()
+            wait_for(lambda: window.cancel_event is None)
+            tile = window.tiles[0]
+            self.assertEqual(list(tile.correction_buttons), ["crop"], "not straightened: off")
+            self.assertFalse(tile.correction_buttons["crop"].get_sensitive())
+            self.assertFalse(tile.turn_buttons.get_visible(), "turning needs the review")
+            window.close()
+
+    def test_turn_upright_needs_orientation_data(self):
+        Adw.init()
+        values = dict(wsdscan.CONFIG_DEFAULTS, auto_rotate=True)
+        without = wsdscan_gui.ScanSettings(values, scanform.Choices.unknown(),
+                                           scanform.OcrStatus(["tesseract"], ["eng"], osd=False))
+        self.assertFalse(without.auto_rotate.get_sensitive())
+        self.assertFalse(without.values()["auto_rotate"])
+        self.assertIn("tesseract-ocr-osd", without.auto_rotate.get_subtitle())
+        with_osd = wsdscan_gui.ScanSettings(values, scanform.Choices.unknown(),
+                                            scanform.OcrStatus(["tesseract"], ["eng"], osd=True))
+        self.assertTrue(with_osd.auto_rotate.get_sensitive())
+        self.assertTrue(with_osd.values()["auto_rotate"])
+        self.assertIn(with_osd.auto_rotate, with_osd.rows())
 
     def test_name_and_folder_changed_before_saving(self):
         with FakeScanner(model="ES-580W", sheets=1) as fake:

@@ -28,7 +28,8 @@ try:
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
     gi.require_version("GdkPixbuf", "2.0")
-    from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk
+    gi.require_version("Graphene", "1.0")
+    from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, GObject, Graphene, Gtk
 except (ImportError, ValueError) as e:
     sys.exit(f"Scan to PDF needs GTK 4 and libadwaita for Python ({e}).\n"
              "Debian/Ubuntu: sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1\n"
@@ -41,6 +42,12 @@ from scanform import _  # noqa: E402
 
 MIN_ADW = (1, 5)
 THUMB_HEIGHT = 150  # page preview height in pixels
+THUMB_DETAIL = 2  # thumbnail pixels per preview pixel of the page (sharp on HiDPI)
+ICONS = os.path.join(HERE, "data", "icons")  # the correction icons (installed: next to this file)
+CSS = """
+.correction { min-width: 24px; min-height: 24px; padding: 0; }
+.correction:not(:checked) { opacity: 0.55; }
+"""
 MAX_THUMBNAIL_SOURCE_PIXELS = 100_000_000  # 600 dpi A3 is ~70 megapixels
 
 
@@ -146,6 +153,12 @@ class ScanSettings:
             use_markup=False, title=_("Remove blank pages"),
             subtitle=_("For example the empty backs of one-sided pages"),
             active=bool(values["skip_blank"]))
+        self.deskew = Adw.SwitchRow(
+            use_markup=False, title=_("Straighten pages"),
+            subtitle=_("Pages fed in crooked; works best with automatic paper size"),
+            active=bool(values["deskew"]))
+        self.auto_rotate = Adw.SwitchRow(use_markup=False, title=_("Turn pages upright"))
+        self.set_auto_rotate(values)
         self.review = Adw.SwitchRow(
             use_markup=False, title=_("Review pages before saving"),
             subtitle=_("Remove single pages before saving and text recognition"),
@@ -157,7 +170,7 @@ class ScanSettings:
 
     def rows(self):
         return [self.source, self.mode, self.resolution, self.paper, self.lossless, self.exposure,
-                self.ocr, self.skip_blank, self.review]
+                self.ocr, self.skip_blank, self.deskew, self.auto_rotate, self.review]
 
     def _resolution_options(self):
         return [(r, f"{r} dpi") for r in self.choices.resolutions]
@@ -182,6 +195,14 @@ class ScanSettings:
         self.ocr.set_sensitive(status.available)
         self.ocr.set_subtitle(status.describe(values["ocr_engine"], values["ocr_lang"]))
 
+    def set_auto_rotate(self, values):
+        """Unavailable without Tesseract's orientation detection."""
+        available = self.ocr_status.osd
+        self.auto_rotate.set_active(bool(values["auto_rotate"]) and available)
+        self.auto_rotate.set_sensitive(available)
+        self.auto_rotate.set_subtitle(_("Pages that are sideways or upside down")
+                                      if available else self.ocr_status.OSD_HINT)
+
     def set_exposure(self, brightness, contrast):
         enabled = brightness is not None or contrast is not None
         self.brightness.set_value(brightness or 0)
@@ -203,6 +224,8 @@ class ScanSettings:
     def set_values(self, values):
         self.review.set_active(bool(values["review_pages"]))
         self.skip_blank.set_active(bool(values["skip_blank"]))
+        self.deskew.set_active(bool(values["deskew"]))
+        self.set_auto_rotate(values)
         self.source.set_value(values["source"])
         self.mode.set_value(values["mode"])
         self.resolution.set_value(self.choices.pick_resolution(values["resolution"]))
@@ -225,6 +248,8 @@ class ScanSettings:
             "contrast": int(self.contrast.get_value()) if exposure else None,
             "ocr": self.ocr.get_active(),
             "skip_blank": self.skip_blank.get_active(),
+            "deskew": self.deskew.get_active(),
+            "auto_rotate": self.auto_rotate.get_active(),
             "review_pages": self.review.get_active(),
         }
 
@@ -265,8 +290,9 @@ class FolderRow(Adw.ActionRow):
         self.set_subtitle(scanform.display_path(folder))
 
 
-def make_thumbnail(data):
+def make_thumbnail(data, info=None):
     """Decode a scanned page at preview size; runs in the scan thread. None if not possible.
+    With a sheet found in a larger scan area (info), the sheet gets the preview size.
 
     Uses GTK's own JPEG/TIFF decoder: gdk-pixbuf's loaders are optional and
     may be missing (newer versions delegate to the glycin loaders).
@@ -287,9 +313,13 @@ def make_thumbnail(data):
     pixels, stride = downloader.download_bytes()
     pixbuf = GdkPixbuf.Pixbuf.new_from_bytes(pixels, GdkPixbuf.Colorspace.RGB, True, 8,
                                              width, height, stride)
-    if height <= THUMB_HEIGHT:
+    target = THUMB_HEIGHT * THUMB_DETAIL
+    if info and info.get("paper") and info["size"][1]:
+        sheet = min(info["paper"][2:4])  # its shorter side may end up as the height
+        target = min(height, round(target * info["size"][1] / max(1, sheet)))
+    if height <= target:
         return pixbuf
-    return pixbuf.scale_simple(max(1, width * THUMB_HEIGHT // height), THUMB_HEIGHT,
+    return pixbuf.scale_simple(max(1, width * target // height), target,
                                GdkPixbuf.InterpType.BILINEAR)
 
 
@@ -299,19 +329,94 @@ def pixbuf_texture(pixbuf):
                                  pixbuf.read_pixel_bytes(), pixbuf.get_rowstride())
 
 
+class PagePaintable(GObject.Object, Gdk.Paintable):
+    """A scanned page as it will be saved: the thumbnail placed with the
+    page's corrections (cut, straightened, turned), like wsdscan.page_layout
+    does in the PDF."""
+
+    def __init__(self, texture, info):
+        super().__init__()
+        self.texture, self.info = texture, info
+
+    def do_get_intrinsic_aspect_ratio(self):
+        page_w, page_h, _place = wsdscan.page_layout(self.info)
+        return page_w / page_h if page_h else 0.0
+
+    def do_snapshot(self, snapshot, width, height):
+        page_w, page_h, cx, cy, angle = wsdscan.page_geometry(self.info)
+        if not page_w or not page_h:
+            return
+        scale = min(width / page_w, height / page_h)
+        thumb = self.texture.get_width() / self.info["size"][0]
+        white = Gdk.RGBA()
+        white.parse("white")
+        area = Graphene.Rect().init(0, 0, page_w * scale, page_h * scale)
+        snapshot.save()
+        snapshot.translate(Graphene.Point().init((width - page_w * scale) / 2,
+                                                 (height - page_h * scale) / 2))
+        snapshot.push_clip(area)
+        snapshot.append_color(white, area)  # outside the scan (a sheet's cut-off corner)
+        # Plain steps (every GSK renderer draws them): the point (cx, cy) of
+        # the image to the page's center, turned around it.
+        snapshot.translate(Graphene.Point().init(page_w * scale / 2, page_h * scale / 2))
+        snapshot.rotate(angle)
+        snapshot.scale(scale / thumb, scale / thumb)
+        snapshot.translate(Graphene.Point().init(-cx * thumb, -cy * thumb))
+        snapshot.append_texture(self.texture, Graphene.Rect().init(
+            0, 0, self.texture.get_width(), self.texture.get_height()))
+        snapshot.pop()
+        snapshot.restore()
+
+    def changed(self):
+        self.invalidate_size()
+        self.invalidate_contents()
+
+
 class PageTile(Gtk.Box):
     """Preview of one scanned page: thumbnail, page number, keep checkbox
-    (review step) and text recognition state."""
+    (review step), text recognition state, a button per correction made
+    (cut to the sheet, straightened, turned) that switches it off and on,
+    and buttons to turn the page by 90° (review step)."""
 
-    def __init__(self, number, pixbuf, on_toggled):
+    def __init__(self, number, pixbuf, on_toggled, info=None, dpi=300):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.number = number
+        self.info, self.dpi = info, dpi
+        self.paintable = None
         self.picture = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True,
                                    width_request=THUMB_HEIGHT * 7 // 10,
                                    height_request=THUMB_HEIGHT)
         self.picture.add_css_class("card")
         if pixbuf:
-            self.picture.set_paintable(pixbuf_texture(pixbuf))
+            texture = pixbuf_texture(pixbuf)
+            if info and info["size"][0] and info["size"][1]:
+                self.paintable = PagePaintable(texture, info)
+                self.picture.set_paintable(self.paintable)
+            else:
+                self.picture.set_paintable(texture)
+        self.correction_buttons = {}
+        corrections = Gtk.Box(spacing=2, halign=Gtk.Align.START, valign=Gtk.Align.END,
+                              margin_bottom=4, margin_start=4)
+        for name in wsdscan.corrections_done(info) if info else []:
+            button = Gtk.ToggleButton(active=info["use"][name], sensitive=False,
+                                      child=Gtk.Image(icon_name=scanform.CORRECTION_ICONS[name],
+                                                      pixel_size=12))
+            button.add_css_class("osd")
+            button.add_css_class("correction")
+            button.connect("toggled", self._correction_toggled, name)
+            self.correction_buttons[name] = button
+            corrections.append(button)
+            self._show_correction(name)
+        self.turn_buttons = Gtk.Box(spacing=2, halign=Gtk.Align.START, valign=Gtk.Align.START,
+                                    margin_top=4, margin_start=4, visible=False)
+        for degrees, tooltip in ((-90, _("Turn left")), (90, _("Turn right"))):
+            button = Gtk.Button(tooltip_text=tooltip,
+                                child=Gtk.Image(icon_name=scanform.TURN_ICONS[degrees],
+                                                pixel_size=12))
+            button.add_css_class("osd")
+            button.add_css_class("correction")
+            button.connect("clicked", self._turn_clicked, degrees)
+            self.turn_buttons.append(button)
         self.keep = Gtk.CheckButton(active=True, visible=False, halign=Gtk.Align.END,
                                     valign=Gtk.Align.START, margin_top=4, margin_end=4,
                                     tooltip_text=_("Keep this page"))
@@ -321,7 +426,7 @@ class PageTile(Gtk.Box):
         self.spinner = Gtk.Spinner(spinning=True, visible=False, halign=Gtk.Align.END,
                                    valign=Gtk.Align.END, margin_bottom=4, margin_end=4)
         overlay = Gtk.Overlay(child=self.picture)
-        for widget in (self.keep, self.state, self.spinner):
+        for widget in (self.keep, self.state, self.spinner, corrections, self.turn_buttons):
             overlay.add_overlay(widget)
         self.append(overlay)
         self.label = Gtk.Label(label=_("Page {n}").format(n=number), css_classes=["caption"])
@@ -330,6 +435,31 @@ class PageTile(Gtk.Box):
     def _toggled(self, button, on_toggled):
         self.picture.set_opacity(1.0 if button.get_active() else 0.35)
         on_toggled()
+
+    def _correction_toggled(self, button, name):
+        self.info["use"][name] = button.get_active()  # read when the scan saves the PDF
+        self._show_correction(name)
+        if self.paintable:
+            self.paintable.changed()
+
+    def _turn_clicked(self, _button, degrees):
+        self.turn(degrees)
+
+    def turn(self, degrees):
+        """Turn the page by hand (read when the scan saves the PDF)."""
+        self.info["turn"] = (self.info.get("turn", 0) + degrees) % 360
+        self.paintable.changed()
+
+    def _show_correction(self, name):
+        button = self.correction_buttons[name]
+        button.set_tooltip_text(scanform.correction_tooltip(name, self.info, self.dpi,
+                                                            button.get_active()))
+
+    def set_corrections_editable(self, editable):
+        """Corrections can be switched until the PDF is saved (with the review step)."""
+        for button in self.correction_buttons.values():
+            button.set_sensitive(editable)
+        self.turn_buttons.set_visible(editable and self.paintable is not None)
 
     def mark_blank(self, blank):
         """A blank page starts unticked (removed unless the review keeps it)."""
@@ -449,6 +579,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.ocr_total = 0
         self.blank_pages = 0    # found blank in the current scan
         self.scan_reviewed = False
+        self.review_open = False  # page corrections can be switched (review, before saving)
+        self.scan_dpi = 300
         self.page_count = Gtk.Label(css_classes=["dim-label"])
         self.page_grid = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
                                      min_children_per_line=2, max_children_per_line=6,
@@ -638,10 +770,11 @@ class MainWindow(Adw.ApplicationWindow):
         self.ocr_tiles = []
         self.pages_group.set_visible(False)
 
-    def add_page(self, number, pixbuf, blank=False):
-        tile = PageTile(number, pixbuf, self.update_page_count)
-        if blank:
+    def add_page(self, number, pixbuf, info=None):
+        tile = PageTile(number, pixbuf, self.update_page_count, info, self.scan_dpi)
+        if info and info["blank"]:
             tile.mark_blank(True)
+        tile.set_corrections_editable(self.scan_reviewed and self.review_open)
         self.tiles.append(tile)
         self.page_grid.append(tile)
         self.pages_group.set_visible(True)
@@ -673,8 +806,10 @@ class MainWindow(Adw.ApplicationWindow):
         kept = [i for i, tile in enumerate(self.tiles) if tile.kept()]
         result["keep"] = kept if save else None
         self.ocr_tiles = [self.tiles[i] for i in kept]
+        self.review_open = False
         for tile in self.tiles:
             tile.set_review(False)
+            tile.set_corrections_editable(False)
         self.review_bar.set_visible(False)
         self.cancel_button.set_visible(True)
         event.set()
@@ -729,6 +864,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.ocr_total = 0
         self.blank_pages = 0  # found blank, removed unless reviewed
         self.scan_reviewed = review
+        self.review_open = review  # corrections can still be switched (until saving)
+        self.scan_dpi = args.resolution
         self.cancel_button.set_sensitive(True)
         self.set_busy(True)
         self.set_progress(scanform.progress_text("scanning", 0))
@@ -736,10 +873,10 @@ class MainWindow(Adw.ApplicationWindow):
         def progress(event, pages):
             in_main_thread(self.on_progress, event, pages)
 
-        def page_image(number, data, blank):
-            in_main_thread(self.add_page, number, make_thumbnail(data), blank)
+        def page_image(number, data, info):
+            in_main_thread(self.add_page, number, make_thumbnail(data, info), info)
 
-        def select_pages(images, blank):
+        def select_pages(images, infos):
             """Wait (in the scan thread) for the user's review decision."""
             decided, result = threading.Event(), {"keep": None}
             in_main_thread(self.start_review, decided, result)
@@ -1383,6 +1520,13 @@ class ScanApp(Adw.Application):
         open_file = Gio.SimpleAction.new("open-file", GLib.VariantType.new("s"))
         open_file.connect("activate", lambda _a, path: self.open_file(path.get_string()))
         self.add_action(open_file)
+        display = Gdk.Display.get_default()
+        if display:
+            Gtk.IconTheme.get_for_display(display).add_search_path(ICONS)
+            css = Gtk.CssProvider()
+            css.load_from_string(CSS)
+            Gtk.StyleContext.add_provider_for_display(display, css,
+                                                      Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.ocr = scanform.OcrStatus.detect()
         try:
             self.load_settings()

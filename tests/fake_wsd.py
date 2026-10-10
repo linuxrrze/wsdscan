@@ -109,6 +109,44 @@ def test_page(width, height, paper=235, marks=(), noise=3):
     return rows
 
 
+def scanned_sheet(width, height, sheet, backing=180, paper=235, pad_from=None, marks=(),
+                  noise=3):
+    """Gray scan of a sheet on the feeder's backing, as rows. sheet: (cx, cy,
+    w, h, angle): the sheet's center, size in pixels and clockwise tilt in
+    degrees. marks: (x, y, w, h, value) rectangles on the sheet, in its own
+    upright coordinates. Rows from pad_from on are white padding (as the
+    ES-580W sends after the sheet's end)."""
+    cx, cy, sw, sh, angle = sheet
+    cos, sin = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+    rows = []
+    for y in range(height):
+        if pad_from is not None and y >= pad_from:
+            rows.append(bytearray([255]) * width)
+            continue
+        row = bytearray(width)
+        for x in range(width):
+            dx, dy = x + 0.5 - cx, y + 0.5 - cy
+            u, v = dx * cos + dy * sin + sw / 2, -dx * sin + dy * cos + sh / 2
+            jitter = (x // 8 * 7919 + y // 8 * 104729) % (2 * noise + 1) - noise
+            if 0 <= u < sw and 0 <= v < sh:
+                value = paper
+                for mx, my, mw, mh, mvalue in marks:
+                    if mx <= u < mx + mw and my <= v < my + mh:
+                        value = mvalue
+                        break
+            else:
+                value = backing
+            row[x] = max(0, min(255, value + jitter))
+        rows.append(row)
+    return rows
+
+
+def with_comment(jpeg, text):
+    """The JPEG with a comment segment, e.g. b"ROTATE=90" for the fake Tesseract's
+    orientation detection."""
+    return jpeg[:2] + b"\xff\xfe" + (len(text) + 2).to_bytes(2, "big") + text + jpeg[2:]
+
+
 def _fdct(block):
     """Quantized coefficients of an 8x8 block (64 values, row by row)."""
     if min(block) == max(block):  # flat: DC only
@@ -323,6 +361,7 @@ class FakeScanner:
             "images": None,               # list of page images, used in turn
             "doctype": False,             # put a DTD into the Get response
             "udp_port": 0,                # discovery port (0 = any free one)
+            "end_with_empty": False,      # end the job with an empty image (ES-580W, long sizes)
         }
         unknown = set(config) - set(self.config)
         if unknown:
@@ -331,6 +370,7 @@ class FakeScanner:
         self.endpoint = f"urn:uuid:{uuid.uuid4()}"
         self.requests = []   # (action, request_xml)
         self.tickets = []    # CreateScanJob request bodies
+        self._sent_empty = False
         self._images_left = 0
         self._images_sent = 0
         self._busy_left = self.config["busy_count"]
@@ -573,11 +613,17 @@ class FakeScanner:
         if self.config["behavior"] == "jam" and self._images_sent >= self.config["jam_after"]:
             self._images_left = 0
             return self._fault(h, "ServerErrorJobFailed", code=500)
+        empty = False
         if self._images_left == 0 and not self.config["endless"]:
-            return self._fault(h, "ClientErrorNoImagesAvailable")
-        self._images_left = max(0, self._images_left - 1)
-        self._images_sent += 1
-        if self.config["images"]:
+            if not self.config["end_with_empty"] or self._sent_empty:
+                return self._fault(h, "ClientErrorNoImagesAvailable")
+            self._sent_empty = empty = True
+        else:
+            self._images_left = max(0, self._images_left - 1)
+            self._images_sent += 1
+        if empty:
+            image = b""
+        elif self.config["images"]:
             images = self.config["images"]
             image = images[(self._images_sent - 1) % len(images)]
         elif self.config["image"] is not None:

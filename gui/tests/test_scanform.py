@@ -140,6 +140,34 @@ class ScannerProblemTest(unittest.TestCase):
         self.assertEqual(p.action, "app.preferences")
 
 
+class PageCorrectionTextTest(unittest.TestCase):
+    INFO = {"paper": (500, 700, 1240, 1748, 3.4), "skew": -3.37, "rotate": 270}
+
+    def test_page_icons_shipped(self):
+        # Icon themes differ (newer Adwaita dropped e.g. object-rotate-left):
+        # the page buttons use the app's own icons.
+        for name in list(scanform.CORRECTION_ICONS.values()) + list(scanform.TURN_ICONS.values()):
+            with self.subTest(icon=name):
+                self.assertTrue(os.path.isfile(os.path.join(GUI, "data", "icons", f"{name}.svg")))
+
+    def test_tooltips(self):
+        self.assertEqual(scanform.correction_tooltip("crop", self.INFO, 300, True),
+                         "Cut to the sheet: 105 × 148 mm")
+        self.assertEqual(scanform.correction_tooltip("skew", self.INFO, 300, True),
+                         "Straightened by 3.4°")
+        self.assertEqual(scanform.correction_tooltip("rotate", self.INFO, 300, False),
+                         "Turned upright by 270° (off)")
+
+    def test_settings(self):
+        values = dict(wsdscan.CONFIG_DEFAULTS, paper="auto", deskew=True, auto_rotate=True)
+        self.assertEqual(scanform.settings_summary(values),
+                         "Both sides · Color · 300 dpi · Automatic · straighten · turn upright")
+        a = scanform.scan_args(values)
+        self.assertEqual((a.paper, a.deskew, a.auto_rotate), ("auto", True, True))
+        self.assertEqual(scanform.PAPERS[0], ("auto", "Automatic"))
+        self.assertEqual(set(scanform.CORRECTION_ICONS), set(wsdscan.CORRECTIONS))
+
+
 class OcrStatusTest(unittest.TestCase):
     def test_unavailable(self):
         status = scanform.OcrStatus([], [])

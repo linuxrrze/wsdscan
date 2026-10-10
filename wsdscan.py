@@ -23,6 +23,7 @@ import datetime
 import getpass
 import os
 import http.client
+import math
 import re
 import secrets
 import shutil
@@ -68,11 +69,14 @@ EXPOSURE_RANGE = (-1000, 1000)
 EXPOSURE_PROBE = (-1000, -500, 0, 500, 1000)
 # Paper sizes in 1/1000 inch, the unit WS-Scan uses.
 PAPER_SIZES = {
+    "auto": None,  # the scanner's whole scan area; the sheet is found in the image
     "a4": (8268, 11693),
     "a5": (5827, 8268),
     "letter": (8500, 11000),
     "legal": (8500, 14000),
 }
+
+AUTO_SIZE_FALLBACK = (8500, 14000)  # paper "auto" if the scanner reports no maximum: legal
 
 # Faults that mean "try again shortly" rather than "give up".
 RETRY_FAULTS = ("ServerErrorTemporaryError", "ServerErrorNotAcceptingJobs", "Busy")
@@ -752,7 +756,7 @@ def pick_format(caps, mode="color", lossless=False):
 def scan_ticket(source, mode, resolution, paper, caps, lossless=False,
                 brightness=None, contrast=None):
     """Build a <wscn:ScanTicket> for CreateScanJob and ValidateScanTicket."""
-    width, height = PAPER_SIZES[paper]
+    width, height = PAPER_SIZES[paper] or caps["max_size"] or AUTO_SIZE_FALLBACK
     if caps["max_size"]:
         width, height = min(width, caps["max_size"][0]), min(height, caps["max_size"][1])
     side = (f"<wscn:ColorProcessing>{COLOR_ENTRIES[mode]}</wscn:ColorProcessing>"
@@ -853,6 +857,8 @@ def scan(service, args, caps, on_page=None, should_stop=None):
                       file=sys.stderr)
                 complete = False
                 break
+            if not image and pages:
+                break  # some scanners end the job with an empty image instead of a fault
             if not image or image_kind(image) != expected:
                 die(f"scanner returned no {expected.upper()} image")
             pages.append(image)
@@ -884,16 +890,18 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
       "connecting", "scanning"   n = 0
       "page"                     n = pages scanned so far
       "blank"                    n = number of a page found blank (args.skip_blank)
+      "corrected"                n = number of a page with corrections (crop, skew, rotate)
       "all_blank"                n = pages kept because all of them were blank
       "saving"                   n = pages that will be saved
       "ocr"                      n = pages to recognize (OCR starts)
       "ocr_page"                 n = pages recognized so far (Tesseract only)
-    on_page_image(n, image, blank) gets each scanned page's JPEG/TIFF data,
-    and whether it is blank (always False without args.skip_blank).
-    select_pages(images, blank) may return the indexes of the pages to keep
-    (in order); None discards the scan. Called after scanning, before
-    saving/OCR. Without it, blank pages are removed (args.skip_blank) unless
-    all pages are blank.
+    on_page_image(n, image, info) gets each scanned page's JPEG/TIFF data and
+    its analyze_page() result: whether it is blank (args.skip_blank) and the
+    corrections found (paper "auto", args.deskew, args.auto_rotate).
+    select_pages(images, infos) may return the indexes of the pages to keep
+    (in order); None discards the scan. It may also switch corrections off
+    in an info's "use". Called after scanning, before saving/OCR. Without it,
+    blank pages are removed (args.skip_blank) unless all pages are blank.
     `out` is the PDF path, or a function returning it: then it is called
     right before saving, so the name and folder can still change while
     scanning and during page selection.
@@ -904,6 +912,7 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
     """
     report = on_progress or (lambda event, pages: None)
     ocr = resolve_ocr(args.ocr_engine, args.ocr_lang) if args.ocr else None  # before scanning
+    osd = resolve_osd(args, ocr)
     if device is None:
         report("connecting", 0)
         device = find_scanner(args.host, args.model)
@@ -913,15 +922,17 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
         die(f"could not read scanner capabilities: {e}")
     validate(args, caps)
     report("scanning", 0)
-    blank = []
+    infos = []
 
     def page_done(n, image):
         report("page", n)
-        blank.append(bool(args.skip_blank) and page_is_blank(image))
-        if blank[-1]:
+        infos.append(analyze_page(image, args, args.resolution, osd))
+        if infos[-1]["blank"]:
             report("blank", n)
+        elif corrections_done(infos[-1]):
+            report("corrected", n)
         if on_page_image:
-            on_page_image(n, image, blank[-1])
+            on_page_image(n, image, infos[-1])
 
     try:
         pages, dpi, complete = scan(device["service"], args, caps, on_page=page_done,
@@ -929,27 +940,30 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
     except SoapFault as e:
         die(f"scan failed: {e}")
     if select_pages:
-        keep = select_pages(pages, blank)
+        keep = select_pages(pages, infos)
         if keep is None:
             raise ScanCancelled("scan discarded")
         if not keep:
             raise ScanCancelled("all pages were removed; nothing was saved")
-        pages = [pages[i] for i in keep]
-    elif any(blank):
-        if all(blank):
+    elif any(info["blank"] for info in infos):
+        if all(info["blank"] for info in infos):
             report("all_blank", len(pages))  # rather than saving nothing
+            keep = range(len(pages))
         else:
-            pages = [page for page, empty in zip(pages, blank) if not empty]
+            keep = [i for i, info in enumerate(infos) if not info["blank"]]
+    else:
+        keep = range(len(pages))
+    pages, infos = [pages[i] for i in keep], [infos[i] for i in keep]
     if callable(out):
         out = out()
     report("saving", len(pages))
-    write_pdf(out, pages, dpi, overwrite)
+    write_pdf(out, pages, dpi, overwrite, pages=infos)
     ocr_error = None
     if ocr:
         report("ocr", len(pages))
         try:
             run_ocr(*ocr[:2], out, pages, dpi, ocr[2],
-                    on_page=lambda n: report("ocr_page", n))
+                    on_page=lambda n: report("ocr_page", n), pages=infos)
         except ScanError as e:
             ocr_error = str(e)
     return len(pages), complete, ocr_error
@@ -1484,6 +1498,341 @@ def jpeg_block_grid(data):
     return columns, rows, values
 
 
+# --- Page corrections: paper size, straightening, orientation -----------------
+# A scan with paper "auto" covers the scanner's whole scan area. The sheet
+# itself is found on the block grid: it is brighter than the feeder's backing
+# (gray or black on most ADF scanners); rows of one color at the end (some
+# scanners fill the rest of the length with white) are cut off. The smallest
+# rectangle around the sheet gives its size and how crooked it was fed.
+# Corrections are applied as page geometry in the PDF: the scanned image is
+# embedded unchanged, only placed, rotated and cut to the page.
+
+BLOCK = 8  # pixels per grid block
+PAPER_MIN_CONTRAST = 20  # the sheet must be this much brighter than the backing
+PAPER_MIN_AREA = 0.02  # of the image; smaller "sheets" are specks
+PAPER_MIN_RECT_FILL = 0.85  # sheet outline / its rectangle; less is not a sheet
+PAPER_INSET = 0.5  # blocks cut off the sheet's edges: the outline found lies about
+# this much outside the sheet (edge blocks are partly backing)
+EDGE_SHADOW_MM = 0.35  # and the shadow along a sheet's edge
+SKEW_MIN = 0.15  # degrees; less is not worth straightening
+SKEW_MAX = 20  # degrees; more is not a crooked feed
+PAD_FLAT = 4  # brightness range of a padding row (the same color right to the end)
+UNIFORM_ROW = 16  # brightness range of a row without a sheet edge (e.g. backing blending
+# into padding); a row with paper and backing spans far more
+# Orientation from Tesseract (--psm 0): at least this confidence. Pages with
+# too little text (or handwriting) give none and stay as they are.
+OSD_MIN_CONFIDENCE = 4.0
+OSD_TIMEOUT = 60
+CORRECTIONS = ("crop", "skew", "rotate")  # page_layout() applies the ones in info["use"]
+
+
+def page_grid(image, limit_jpeg_bits=False):
+    """(columns, rows, values) of BLOCK x BLOCK brightness, or None if the
+    image cannot (or should not) be analyzed."""
+    try:
+        width, height = image_size(image)
+        if width * height > BLANK_MAX_PIXELS:
+            return None
+        if image_kind(image) == "tiff":
+            return tiff_block_grid(image)
+        if limit_jpeg_bits and len(image) * 8 > BLANK_MAX_JPEG_BITS * width * height:
+            return None
+        return jpeg_block_grid(image)
+    except ScanError:
+        return None
+
+
+def _convex_hull(points):
+    points = sorted(set(points))
+    if len(points) < 3:
+        return points
+
+    def half(seq):
+        out = []
+        for p in seq:
+            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (p[1] - out[-2][1])
+                                     - (out[-1][1] - out[-2][1]) * (p[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(p)
+        return out
+
+    lower, upper = half(points), half(reversed(points))
+    return lower[:-1] + upper[:-1]
+
+
+def _polygon_area(hull):
+    return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1)
+                   in zip(hull, hull[1:] + hull[:1]))) / 2
+
+
+def _min_area_rect(hull):
+    """(cx, cy, width, height, angle in degrees within [-45, 45]) of the
+    smallest rectangle around a convex polygon (y axis pointing down)."""
+    best = None
+    for (x0, y0), (x1, y1) in zip(hull, hull[1:] + hull[:1]):
+        length = math.hypot(x1 - x0, y1 - y0)
+        if length == 0:
+            continue
+        ux, uy = (x1 - x0) / length, (y1 - y0) / length
+        along = [x * ux + y * uy for x, y in hull]
+        across = [-x * uy + y * ux for x, y in hull]
+        area = (max(along) - min(along)) * (max(across) - min(across))
+        if best is None or area < best[0]:
+            best = (area, ux, uy, along, across)
+    if best is None:
+        return None
+    _area, ux, uy, along, across = best
+    a0, a1, b0, b1 = min(along), max(along), min(across), max(across)
+    ca, cb = (a0 + a1) / 2, (b0 + b1) / 2
+    cx, cy = ca * ux - cb * uy, ca * uy + cb * ux
+    width, height = a1 - a0, b1 - b0
+    angle = math.degrees(math.atan2(uy, ux))
+    while angle > 45:  # the side closest to horizontal is the width
+        angle -= 90
+        width, height = height, width
+    while angle <= -45:
+        angle += 90
+        width, height = height, width
+    return cx, cy, width, height, angle
+
+
+def find_paper(columns, rows, values):
+    """The scanned sheet on a block grid: (cx, cy, width, height, angle) in
+    blocks, angle in degrees (clockwise on screen), or None if no sheet stands
+    out from the background. Padding after the sheet (rows of the last row's
+    color, as some scanners fill the rest of the scan length) is not part of
+    it; without a sheet to find, only the padding is cut off."""
+    def row(r):
+        return values[r * columns:(r + 1) * columns]
+
+    def spread(r):
+        return max(row(r)) - min(row(r))
+
+    first, end = 0, rows
+    if rows and columns and spread(rows - 1) <= PAD_FLAT:
+        pad = sum(row(rows - 1)) / columns
+        while (end > 0 and spread(end - 1) <= PAD_FLAT
+               and abs(sum(row(end - 1)) / columns - pad) <= PAD_FLAT):
+            end -= 1
+        above = sorted(values[:end * columns])
+        if above and abs(above[int(len(above) * 0.9)] - pad) <= 2 * PAD_FLAT:
+            end = rows  # padding the color of the paper (black & white): cannot tell
+    if end - first < 4 or columns < 4:
+        return None
+    trimmed = (columns / 2, end / 2, columns, end, 0.0) if end < rows else None
+    inside = [v for r in range(first, end) for v in row(r)]
+    border = ([values[r * columns] for r in range(first, end)]  # mostly backing
+              + [values[r * columns + columns - 1] for r in range(first, end)] + row(first))
+    backing = sorted(border)[len(border) // 2]
+    paper = sorted(inside)[int(len(inside) * 0.9)]
+    if paper - backing < PAPER_MIN_CONTRAST:
+        return trimmed  # no contrast (e.g. white backing): only cut the padding
+    threshold = (backing + paper) / 2
+
+    def coverage(v):  # share of a block covered by paper, from its brightness
+        return min(1.0, max(0.0, (v - backing) / (paper - backing)))
+
+    lit = [[v > threshold for v in row(r)] if first <= r < end and spread(r) > UNIFORM_ROW
+           else [False] * columns for r in range(rows)]
+    points = []
+    for r in range(first, end):  # left and right edge in each row
+        cells = lit[r]
+        hits = [c for c in range(columns - 1) if cells[c] and cells[c + 1]]
+        if not hits:
+            continue
+        left, right = hits[0], hits[-1] + 1
+        v = row(r)
+        x0 = left - (coverage(v[left - 1]) if left > 0 else 0)
+        x1 = right + 1 + (coverage(v[right + 1]) if right + 1 < columns else 0)
+        points += [(x0, r + 0.5), (x1, r + 0.5)]
+    for c in range(columns):  # top and bottom edge in each column
+        hits = [r for r in range(first, end - 1) if lit[r][c] and lit[r + 1][c]]
+        if not hits:
+            continue
+        top, bottom = hits[0], hits[-1] + 1
+        y0 = top - (coverage(values[(top - 1) * columns + c]) if top > first else 0)
+        y1 = bottom + 1 + (coverage(values[(bottom + 1) * columns + c])
+                           if bottom + 1 < end else 0)
+        points += [(c + 0.5, y0), (c + 0.5, y1)]
+    hull = _convex_hull(points)
+    if len(hull) < 4:
+        return trimmed
+    rect = _min_area_rect(hull)
+    if rect is None:
+        return trimmed
+    cx, cy, width, height, angle = rect
+    if (width * height < PAPER_MIN_AREA * columns * rows
+            or _polygon_area(hull) < PAPER_MIN_RECT_FILL * width * height
+            or abs(angle) > SKEW_MAX):
+        return trimmed
+    return (cx, cy, max(1.0, width - 2 * PAPER_INSET), max(1.0, height - 2 * PAPER_INSET), angle)
+
+
+def sheet_in_pixels(rect, size, dpi):
+    """find_paper()'s rectangle in image pixels, inside the sheet's edge
+    shadow; an upright one also within the image."""
+    cx, cy, width, height = (v * BLOCK for v in rect[:4])
+    angle = rect[4]
+    if angle:
+        shadow = dpi * EDGE_SHADOW_MM / 25.4
+        width, height = max(1.0, width - 2 * shadow), max(1.0, height - 2 * shadow)
+    else:  # upright: within the image (the grid's last blocks may be partial)
+        x0, x1 = max(0, cx - width / 2), min(size[0], cx + width / 2)
+        y0, y1 = max(0, cy - height / 2), min(size[1], cy + height / 2)
+        cx, cy, width, height = (x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0
+    return cx, cy, width, height, angle
+
+
+def inner_region(rect, columns, rows):
+    """Block range (c0, r0, c1, r1) inside a (possibly tilted) sheet."""
+    cx, cy, width, height, angle = rect
+    a = math.radians(abs(angle))
+    half_w = width / 2 * math.cos(a) - height / 2 * math.sin(a)
+    half_h = height / 2 * math.cos(a) - width / 2 * math.sin(a)
+    if half_w <= 1 or half_h <= 1:
+        return None
+    return (max(0, math.ceil(cx - half_w)), max(0, math.ceil(cy - half_h)),
+            min(columns, math.floor(cx + half_w)), min(rows, math.floor(cy + half_h)))
+
+
+def tesseract_osd_available(path=None):
+    path = path or shutil.which("tesseract")
+    if not path:
+        return False
+    try:
+        result = subprocess.run([path, "--list-langs"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "osd" in {line.strip() for line in (result.stdout or result.stderr).splitlines()[1:]}
+
+
+def detect_rotation(image, dpi, tesseract=None):
+    """Clockwise rotation (0, 90, 180, 270) that turns the page upright, from
+    Tesseract's orientation detection; 0 if unsure or not possible."""
+    tesseract = tesseract or shutil.which("tesseract")
+    if not tesseract:
+        return 0
+    with tempfile.TemporaryDirectory(prefix="wsdscan-osd-") as tmp:
+        name = os.path.join(tmp, "page." + ("tif" if image_kind(image) == "tiff" else "jpg"))
+        with open(name, "wb") as f:
+            f.write(image)
+        try:
+            result = subprocess.run([tesseract, name, "-", "--psm", "0", "--dpi", str(dpi)],
+                                    capture_output=True, text=True, timeout=OSD_TIMEOUT)
+        except (OSError, subprocess.SubprocessError):
+            return 0
+    rotate = re.search(r"^Rotate:\s*(\d+)", result.stdout, re.M)
+    confidence = re.search(r"^Orientation confidence:\s*([\d.]+)", result.stdout, re.M)
+    if not rotate or not confidence or float(confidence.group(1)) < OSD_MIN_CONFIDENCE:
+        return 0
+    value = int(rotate.group(1))
+    return value if value in (90, 180, 270) else 0
+
+
+def analyze_page(image, args, dpi, osd=None):
+    """What to do with one scanned page. Returns a dict:
+      size    (width, height) in pixels
+      blank   True if the page is empty paper (args.skip_blank)
+      paper   (cx, cy, width, height, angle) of the sheet in pixels, or None
+      crop    True if the page can be cut to the sheet (paper "auto")
+      skew    degrees to straighten (args.deskew), else 0
+      rotate  clockwise degrees to turn it upright (args.auto_rotate), else 0
+      orientation  the same, detected also without args.auto_rotate (only
+              with osd; for the direction of the OCR text)
+      use     {correction: True}: page_layout() applies these; may be changed
+      turn    clockwise degrees (0, 90, 180, 270) to turn the page by hand on
+              top of the corrections; 0, may be changed (the app's review)
+    osd: Tesseract path for orientation detection (None: not wanted).
+    """
+    info = {"size": (0, 0), "blank": False, "paper": None, "crop": False, "skew": 0.0,
+            "rotate": 0, "use": {name: True for name in CORRECTIONS}, "turn": 0}
+    try:
+        info["size"] = image_size(image)
+    except ScanError:
+        return info
+    auto = getattr(args, "paper", "") == "auto"
+    deskew = bool(getattr(args, "deskew", False))
+    grid = page_grid(image, limit_jpeg_bits=not (auto or deskew))
+    rect = find_paper(*grid) if grid and (auto or deskew) else None
+    if rect:
+        info["paper"] = sheet_in_pixels(rect, info["size"], dpi)
+        angle = rect[4]
+        info["crop"] = auto
+        if deskew and SKEW_MIN <= abs(angle) <= SKEW_MAX:
+            info["skew"] = angle
+    if args.skip_blank and grid:
+        region = inner_region(rect, grid[0], grid[1]) if rect else None
+        if region:
+            c0, r0, c1, r1 = region
+            cols = c1 - c0
+            sub = [v for r in range(r0, r1) for v in grid[2][r * grid[0] + c0:r * grid[0] + c1]]
+            info["blank"] = cols > 0 and grid_is_blank(cols, r1 - r0, sub)
+        elif not auto:
+            info["blank"] = page_is_blank(image)
+    if osd and not info["blank"]:
+        info["orientation"] = detect_rotation(image, dpi, osd)
+        if getattr(args, "auto_rotate", False):
+            info["rotate"] = info["orientation"]
+    return info
+
+
+def page_layout(info):
+    """(page_width, page_height, place) in pixels for a page with its
+    corrections in info["use"]; place(x, y) maps image pixels (y down) to
+    page pixels (y down)."""
+    page_w, page_h, cx, cy, angle = page_geometry(info)
+    theta = math.radians(angle)
+    cos, sin = math.cos(theta), math.sin(theta)
+
+    def place(x, y):
+        dx, dy = x - cx, y - cy
+        return dx * cos - dy * sin + page_w / 2, dx * sin + dy * cos + page_h / 2
+
+    return page_w, page_h, place
+
+
+def page_geometry(info):
+    """(page_width, page_height, cx, cy, angle): the image point (cx, cy)
+    goes to the page's center, the image turned by angle degrees (clockwise
+    on screen) around it."""
+    width, height = info["size"]
+    use = info["use"]
+    skew = info["skew"] if use.get("skew") else 0.0
+    if info["crop"] and use.get("crop") and info["paper"]:
+        cx, cy, w, h, angle = info["paper"]
+        if not skew:  # cut to the sheet without turning it: its upright box, in the image
+            a = math.radians(angle)
+            half_w = (w * abs(math.cos(a)) + h * abs(math.sin(a))) / 2
+            half_h = (w * abs(math.sin(a)) + h * abs(math.cos(a))) / 2
+            x0, x1 = max(0, cx - half_w), min(width, cx + half_w)
+            y0, y1 = max(0, cy - half_h), min(height, cy + half_h)
+            cx, cy, w, h = (x0 + x1) / 2, (y0 + y1) / 2, max(1, x1 - x0), max(1, y1 - y0)
+    else:
+        cx, cy, w, h = width / 2, height / 2, width, height
+    rotate = page_turn(info)
+    page_w, page_h = (h, w) if rotate in (90, 270) else (w, h)
+    return page_w, page_h, cx, cy, rotate - skew
+
+
+def page_turn(info):
+    """Clockwise degrees (0, 90, 180, 270) the page is turned: upright
+    (if used) plus by hand."""
+    rotate = info["rotate"] if info["use"].get("rotate") else 0
+    return (rotate + info.get("turn", 0)) % 360
+
+
+def corrections_done(info):
+    """The corrections that change this page, e.g. ["crop", "rotate"]."""
+    done = []
+    if info["crop"] and info["paper"]:
+        done.append("crop")
+    if info["skew"]:
+        done.append("skew")
+    if info["rotate"]:
+        done.append("rotate")
+    return done
+
+
 def image_xobject(data):
     """Return (pdf_object_bytes, width, height) for one scanned page."""
     if image_kind(data) == "tiff":
@@ -1505,29 +1854,136 @@ def image_xobject(data):
     return head.encode() + data + b"\nendstream", width, height
 
 
-def pdf_bytes(images, dpi):
+def _affine(f):
+    """PDF matrix [a b c d e f] of an affine map, from three of its points."""
+    (x0, y0), (x1, y1), (x2, y2) = f(0, 0), f(1, 0), f(0, 1)
+    return (x1 - x0, y1 - y0, x2 - x0, y2 - y0, x0, y0)
+
+
+def _num(value):
+    text = f"{value:.4f}".rstrip("0").rstrip(".")
+    return "0" if text in ("-0", "") else text
+
+
+def _matrix(m):
+    return " ".join(_num(v) for v in m)
+
+
+# Invisible text layer (Tesseract without OCRmyPDF): words are drawn with a
+# glyphless font in text render mode 3, like Tesseract's own PDF output. Codes
+# are Unicode code points (Identity-H), mapped back to text by a ToUnicode CMap.
+TEXT_CMAP = ("/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n"
+             "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n"
+             "/CMapName /Adobe-Identity-UCS def /CMapType 2 def\n"
+             "1 begincodespacerange <0000> <FFFF> endcodespacerange\n"
+             + "".join(f"{min(100, 256 - start)} beginbfrange\n"
+                       + "".join(f"<{h:02X}00> <{h:02X}FF> <{h:02X}00>\n"
+                                 for h in range(start, min(start + 100, 256)))
+                       + "endbfrange\n" for start in range(0, 256, 100))
+             + "endcmap CMapName currentdict /CMap defineresource pop end end\n")
+
+
+def text_layer(words, info):
+    """Content stream operators (in image pixels, y down) for OCR words:
+    [(text, left, top, width, height)] in the scanned image's pixels."""
+    if not info:
+        turn = 0
+    elif info.get("turn"):  # turned by hand: that is the reading direction
+        turn = page_turn(info)
+    else:
+        turn = info.get("orientation", info.get("rotate", 0))
+    angle = info["paper"][4] if info and info.get("paper") else 0.0
+    phi = math.radians(angle - turn)  # reading direction in the image
+    cos, sin = math.cos(phi), math.sin(phi)
+    ops = ["BT 3 Tr"]
+    for text, left, top, width, height in words:
+        codes = [ord(ch) if ord(ch) <= 0xFFFF and not 0xD800 <= ord(ch) <= 0xDFFF else 0xFFFD
+                 for ch in text]
+        if not codes or width <= 0 or height <= 0:
+            continue
+        if turn == 90:
+            x, y, length, size = left + width, top + height, height, width
+        elif turn == 180:
+            x, y, length, size = left + width, top, width, height
+        elif turn == 270:
+            x, y, length, size = left, top, height, width
+        else:
+            x, y, length, size = left, top + height, width, height
+        scale = max(1.0, min(1000.0, 100 * length / (0.5 * size * len(codes))))
+        ops.append(f"/F1 {_num(size)} Tf {_num(scale)} Tz "
+                   f"{_matrix((cos, sin, sin, -cos, x, y))} Tm "
+                   f"<{''.join(f'{c:04X}' for c in codes)}> Tj")
+    ops.append("ET")
+    return " ".join(ops)
+
+
+def pdf_bytes(images, dpi, pages=None, words=None, font_file=None):
     """Build a PDF with one scanned image per page.
 
     JPEGs are embedded unchanged (DCTDecode); TIFFs are stored losslessly
-    with zlib (FlateDecode).
+    with zlib (FlateDecode). pages: analyze_page() results; their corrections
+    (in "use") place, turn and cut the image on its page. words: per page,
+    OCR words for an invisible text layer (see text_layer); font_file: a
+    glyphless TrueType font to embed for it (Tesseract's pdf.ttf).
     """
     objects = [b"", b""]  # 1 = catalog, 2 = page tree; filled in below
+    scale = 72 / dpi
 
     def add(obj):
         objects.append(obj)
         return len(objects)
 
+    font = None
+    if words and any(words):
+        descriptor = ("<< /Type /FontDescriptor /FontName /GlyphLessFont /Flags 5 "
+                      "/FontBBox [0 0 500 1000] /ItalicAngle 0 /Ascent 1000 /Descent 0 "
+                      "/CapHeight 1000 /StemV 80")
+        if font_file:
+            data = zlib.compress(font_file, 6)
+            embedded = add(f"<< /Length {len(data)} /Length1 {len(font_file)} "
+                           f"/Filter /FlateDecode >>\nstream\n".encode() + data + b"\nendstream")
+            descriptor += f" /FontFile2 {embedded} 0 R"
+        descriptor = add((descriptor + " >>").encode())
+        gids = zlib.compress(b"\x00\x01" * 65536, 9)  # every code shows glyph 1 (none)
+        gid_map = add(f"<< /Length {len(gids)} /Filter /FlateDecode >>\nstream\n".encode()
+                      + gids + b"\nendstream")
+        cid = add(f"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /GlyphLessFont "
+                  f"/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> "
+                  f"/FontDescriptor {descriptor} 0 R /DW 500 /CIDToGIDMap {gid_map} 0 R >>"
+                  .encode())
+        cmap = zlib.compress(TEXT_CMAP.encode(), 9)
+        to_unicode = add(f"<< /Length {len(cmap)} /Filter /FlateDecode >>\nstream\n".encode()
+                         + cmap + b"\nendstream")
+        font = add(f"<< /Type /Font /Subtype /Type0 /BaseFont /GlyphLessFont /Encoding /Identity-H "
+                   f"/DescendantFonts [{cid} 0 R] /ToUnicode {to_unicode} 0 R >>".encode())
+
     kids = []
-    for data in images:
+    for n, data in enumerate(images):
         xobject, width, height = image_xobject(data)
         img = add(xobject)
-        pw, ph = width * 72 / dpi, height * 72 / dpi
-        content = f"q {pw:.2f} 0 0 {ph:.2f} 0 0 cm /Im0 Do Q".encode()
+        info = pages[n] if pages else None
+        if info:
+            page_w, page_h, place = page_layout(dict(info, size=(width, height)))
+        else:
+            page_w, page_h, place = width, height, lambda x, y: (x, y)
+        pw, ph = page_w * scale, page_h * scale
+
+        def to_pdf(x, y):  # image pixels (y down) -> PDF points (y up)
+            px, py = place(x, y)
+            return px * scale, (page_h - py) * scale
+
+        image_matrix = _affine(lambda u, v: to_pdf(u * width, (1 - v) * height))
+        content = f"q {_matrix(image_matrix)} cm /Im0 Do Q"
+        page_words = words[n] if words and n < len(words) else None
+        if page_words:
+            content += f" q {_matrix(_affine(to_pdf))} cm {text_layer(page_words, info)} Q"
+        content = content.encode()
         stream = add(f"<< /Length {len(content)} >>\nstream\n".encode()
                      + content + b"\nendstream")
+        fonts = f" /Font << /F1 {font} 0 R >>" if font and page_words else ""
         kids.append(add(
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw:.2f} {ph:.2f}] "
-            f"/Resources << /XObject << /Im0 {img} 0 R >> >> /Contents {stream} 0 R >>"
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {_num(pw)} {_num(ph)}] "
+            f"/Resources << /XObject << /Im0 {img} 0 R >>{fonts} >> /Contents {stream} 0 R >>"
             .encode()))
     objects[0] = b"<< /Type /Catalog /Pages 2 0 R >>"
     objects[1] = (f"<< /Type /Pages /Kids [{' '.join(f'{k} 0 R' for k in kids)}] "
@@ -1582,8 +2038,8 @@ def write_file(path, data, overwrite=False):
             os.unlink(tmp)
 
 
-def write_pdf(path, images, dpi, overwrite=False):
-    write_file(path, pdf_bytes(images, dpi), overwrite)
+def write_pdf(path, images, dpi, overwrite=False, pages=None, words=None, font_file=None):
+    write_file(path, pdf_bytes(images, dpi, pages, words, font_file), overwrite)
 
 
 # --- Text recognition (OCR) ----------------------------------------------------
@@ -1678,6 +2134,21 @@ def resolve_ocr(engine, lang):
     return engine, available[engine], lang
 
 
+def resolve_osd(args, ocr=None):
+    """Tesseract for orientation detection, or None: for args.auto_rotate
+    (checked before scanning), and for the direction of Tesseract's text."""
+    wanted = bool(getattr(args, "auto_rotate", False))
+    if not wanted and not (ocr and ocr[0] == "tesseract"):
+        return None
+    tesseract = shutil.which("tesseract")
+    if tesseract and tesseract_osd_available(tesseract):
+        return tesseract
+    if wanted:
+        die("turning pages upright needs Tesseract with orientation data; install it "
+            "(e.g. 'sudo apt install tesseract-ocr tesseract-ocr-osd')")
+    return None
+
+
 TESSERACT_PAGE_LINE = re.compile(r"^Page (\d+)\b")
 
 
@@ -1698,11 +2169,62 @@ def run_command(cmd, on_line=None):
     return proc.wait(), lines
 
 
-def run_ocr(engine, path, pdf_path, images, dpi, lang, on_page=None):
+def tessdata_dir(tesseract):
+    """Tesseract's data folder (from --list-langs), or None."""
+    try:
+        result = subprocess.run([tesseract, "--list-langs"], capture_output=True, text=True,
+                                timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r'"([^"]+)"', (result.stdout or result.stderr).split("\n", 1)[0])
+    return match.group(1) if match else None
+
+
+def tesseract_font(tesseract):
+    """Tesseract's glyphless font for invisible text (tessdata/pdf.ttf), or None."""
+    folder = tessdata_dir(tesseract)
+    path = os.path.join(folder, "pdf.ttf") if folder else None
+    try:
+        with open(path, "rb") as f:
+            data = f.read(2 ** 20 + 1)
+    except (OSError, TypeError):
+        return None
+    return data if 0 < len(data) <= 2 ** 20 else None
+
+
+def parse_tsv(text):
+    """Words from Tesseract's TSV output: {page number: [(text, left, top, width, height)]}."""
+    lines = text.splitlines()
+    if not lines:
+        return {}
+    header = lines[0].split("\t")
+    try:
+        col = {name: header.index(name) for name in
+               ("level", "page_num", "left", "top", "width", "height", "conf", "text")}
+    except ValueError:
+        die("text recognition gave unreadable results (TSV without the expected columns)")
+    words = {}
+    for line in lines[1:]:
+        fields = line.split("\t")
+        if len(fields) < len(header) or fields[col["level"]] != "5":
+            continue
+        word = fields[col["text"]].strip()
+        try:
+            box = [int(fields[col[k]]) for k in ("page_num", "left", "top", "width", "height")]
+        except ValueError:
+            continue
+        if word and box[3] > 0 and box[4] > 0:
+            words.setdefault(box[0], []).append((word, *box[1:]))
+    return words
+
+
+def run_ocr(engine, path, pdf_path, images, dpi, lang, on_page=None, pages=None):
     """Replace pdf_path by a searchable PDF. Raises ScanError (pdf_path is kept).
 
     on_page(n) reports recognized pages; only Tesseract reports them
     ("Page N : file" lines), OCRmyPDF has no per-page progress output.
+    pages: analyze_page() results, so Tesseract's text follows the page
+    corrections (OCRmyPDF reads the already corrected PDF).
     """
     with tempfile.TemporaryDirectory(prefix="wsdscan-ocr-") as tmp:
         result_pdf = os.path.join(tmp, "out.pdf")
@@ -1721,7 +2243,11 @@ def run_ocr(engine, path, pdf_path, images, dpi, lang, on_page=None):
                 names.append(name)
             with open(listing, "w", encoding="utf-8") as f:
                 f.write("\n".join(names) + "\n")
-            cmd = [path, listing, result_pdf[:-4], "-l", lang, "--dpi", str(dpi), "pdf"]
+            # Words with their positions (TSV) go into this tool's own PDF, so
+            # the text layer follows the page corrections. With orientation
+            # data, Tesseract also reads pages that are sideways or upside down.
+            psm = "1" if tesseract_osd_available(path) else "3"
+            cmd = [path, listing, result_pdf[:-4], "-l", lang, "--dpi", str(dpi), "--psm", psm, "tsv"]
         done = []
 
         def on_line(line):
@@ -1731,12 +2257,18 @@ def run_ocr(engine, path, pdf_path, images, dpi, lang, on_page=None):
                 on_page(len(done))
 
         code, output = run_command(cmd, on_line)
+        if engine == "tesseract":
+            result_pdf = result_pdf[:-4] + ".tsv"
         if code != 0 or not os.path.exists(result_pdf):
             details = [clean(line) for line in output if line.strip()][-3:]
             die(f"text recognition with {engine} failed (exit {code})"
                 + (": " + " / ".join(details) if details else ""))
         with open(result_pdf, "rb") as f:
             result = f.read()
+        if engine == "tesseract":
+            words = parse_tsv(result.decode("utf-8", "replace"))
+            result = pdf_bytes(images, dpi, pages, [words.get(n, []) for n in range(1, len(images) + 1)],
+                               tesseract_font(path))
         write_file(pdf_path, result, overwrite=True)  # replaces our own file atomically
 
 
@@ -1763,6 +2295,8 @@ CONFIG_DEFAULTS = {
     "scanner": "",  # name of the default [scanner NAME] profile
     "review_pages": False,  # desktop app: review pages before saving (ignored by the CLI)
     "skip_blank": False,  # remove blank pages
+    "deskew": False,  # straighten pages that were fed crooked
+    "auto_rotate": False,  # turn pages upright (Tesseract orientation detection)
 }
 SCANNER_SECTION = "scanner "  # profiles: [scanner Office], [scanner Home], ...
 CONFIG_CHOICES = {
@@ -1796,7 +2330,7 @@ def parse_config_value(key, text):
             raise ValueError(str(e))
     if key == "ocr_lang" and text and not re.fullmatch(r"[a-z_]+(\+[a-z_]+)*", text):
         raise ValueError("expected Tesseract language codes like deu+eng")
-    if key in ("lossless", "ocr", "review_pages", "skip_blank"):
+    if key in ("lossless", "ocr", "review_pages", "skip_blank", "deskew", "auto_rotate"):
         if text.lower() not in ("true", "false", "yes", "no", "1", "0", "on", "off"):
             raise ValueError("expected true or false")
         return text.lower() in ("true", "yes", "1", "on")
@@ -2028,6 +2562,13 @@ def parse_args(argv=None):
                    default=cfg["skip_blank"],
                    help="remove blank pages, e.g. the empty backs of a duplex scan; if "
                         "all pages are blank, they are kept (default: %(default)s)")
+    p.add_argument("--deskew", action=argparse.BooleanOptionalAction, default=cfg["deskew"],
+                   help="straighten pages that were fed crooked; finds the sheet's edges, "
+                        "so it works best with --paper auto (default: %(default)s)")
+    p.add_argument("--auto-rotate", action=argparse.BooleanOptionalAction,
+                   default=cfg["auto_rotate"],
+                   help="turn pages that are sideways or upside down upright; needs "
+                        "Tesseract with orientation data (default: %(default)s)")
     p.add_argument("--brightness", type=exposure_value, metavar="N", default=cfg["brightness"],
                    help=f"brightness {EXPOSURE_RANGE[0]}..{EXPOSURE_RANGE[1]} or 'default' "
                         "(experimental; default: %(default)s = scanner default)")
@@ -2045,7 +2586,8 @@ def parse_args(argv=None):
     p.add_argument("-r", "--resolution", type=resolution_value, default=cfg["resolution"],
                    help="dpi (default: %(default)s)")
     p.add_argument("-p", "--paper", choices=tuple(PAPER_SIZES), default=cfg["paper"],
-                   help="paper size (default: %(default)s)")
+                   help="paper size; auto scans the whole scan area and cuts each page "
+                        "to its sheet (default: %(default)s)")
     p.add_argument("-i", "--info", action="store_true",
                    help="show scanner capabilities and status, then exit")
     p.add_argument("-c", "--check", action="store_true",
@@ -2083,6 +2625,9 @@ def show_config(args):
     if engines:
         print(f"OCR languages: {', '.join(tesseract_languages()) or '?'} "
               f"(automatic: {default_ocr_languages()})")
+    print("Orientation detection (--auto-rotate): "
+          + ("available" if tesseract_osd_available()
+             else "not installed (install tesseract-ocr and tesseract-ocr-osd)"))
 
 
 def main(argv=None):
@@ -2117,6 +2662,18 @@ def main(argv=None):
 
     blank = []
 
+    def page_image(n, image, info):
+        done = []
+        if info["crop"] and info["paper"]:
+            _cx, _cy, w, h, _a = info["paper"]
+            done.append(f"{w / args.resolution * 25.4:.0f} x {h / args.resolution * 25.4:.0f} mm")
+        if info["skew"]:
+            done.append(f"straightened by {abs(info['skew']):.1f}°")
+        if info["rotate"]:
+            done.append(f"turned {info['rotate']}°")
+        if done and not info["blank"]:
+            print(f"  page {n}: {', '.join(done)}", file=sys.stderr)
+
     def progress(event, pages):
         if event == "scanning":
             print("scanning...", file=sys.stderr)
@@ -2132,7 +2689,7 @@ def main(argv=None):
             print("recognizing text...", file=sys.stderr)
 
     pages, complete, ocr_error = scan_to_file(args, out, device=device, on_progress=progress,
-                                              overwrite=args.force)
+                                              on_page_image=page_image, overwrite=args.force)
     removed = f" ({len(blank)} blank page(s) removed)" if blank else ""
     print(f"saved {pages} page(s) to {out}{removed}")
     if not complete:
