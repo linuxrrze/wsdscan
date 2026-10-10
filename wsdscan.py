@@ -6,7 +6,9 @@ have a document feeder. Developed and tested with the Epson ES-580W.
 
 Talks WSD (WS-Discovery + WS-Scan, SOAP over HTTP) directly to the scanner and
 writes the PDF itself, so it needs nothing beyond the Python 3 standard
-library: no SANE, no scanimage, no img2pdf.
+library: no SANE, no scanimage, no img2pdf. Optionally (--backend sane) it
+scans through SANE's scanimage instead, e.g. for USB scanners or a backend's
+own cropping and straightening.
 
 Protocol flow:
   1. WS-Discovery Probe (UDP 3702)     -> device UUID + device URL
@@ -18,20 +20,25 @@ Protocol flow:
 """
 
 import argparse
+import collections
 import configparser
 import datetime
 import getpass
 import os
 import http.client
 import math
+import queue
 import re
 import secrets
+import shlex
 import shutil
+import signal
 import socket
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -75,6 +82,9 @@ PAPER_SIZES = {
     "letter": (8500, 11000),
     "legal": (8500, 14000),
 }
+
+# The same in mm, for SANE (exact, not rounded from inches).
+PAPER_MM = {"a4": (210, 297), "a5": (148, 210), "letter": (215.9, 279.4), "legal": (215.9, 355.6)}
 
 AUTO_SIZE_FALLBACK = (8500, 14000)  # paper "auto" if the scanner reports no maximum: legal
 
@@ -471,6 +481,20 @@ def find_scanner(host, model=None):
         raise ScannerChoiceNeeded(f"{len(matches)} scanners found ("
                                   + "; ".join(describe_device(d) for d in matches) + f"); {hint}")
     return matches[0]
+
+
+def list_sane_devices(model=None):
+    found = [d for d in sane_devices() if model_matches(d, model)]
+    if not found:
+        die("SANE finds no scanner" + (f" matching {model!r}" if model else ""))
+    configured = {}
+    for name, entries in load_scanners().items():
+        if entries.get("backend") == "sane" and entries.get("device"):
+            configured.setdefault(entries["device"], []).append(name)
+    for d in found:
+        names = configured.get(d["name"], [])
+        print(f"{d['name']:<32} {d['manufacturer']} {d['model']} ({d['type']})"
+              + (f"  [{', '.join(names)}]" if names else ""))
 
 
 def list_scanners(host, model=None):
@@ -913,20 +937,25 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
     report = on_progress or (lambda event, pages: None)
     ocr = resolve_ocr(args.ocr_engine, args.ocr_lang) if args.ocr else None  # before scanning
     osd = resolve_osd(args, ocr)
+    backend = getattr(args, "backend", "wsd") or "wsd"
     if device is None:
         report("connecting", 0)
-        device = find_scanner(args.host, args.model)
-    try:
-        caps = get_capabilities(device["service"])
-    except SoapFault as e:
-        die(f"could not read scanner capabilities: {e}")
+        device = find_device(backend, args.host, getattr(args, "device", None), args.model)
+    caps = device_capabilities(device)
     validate(args, caps)
+    # What the scanner does itself (SANE) is not done again on the image.
+    hardware = sane_hardware(args, caps)
+    analysis = argparse.Namespace(**vars(args))
+    if hardware["crop"]:
+        analysis.paper = "scanner"
+    if hardware["skew"]:
+        analysis.deskew = False
     report("scanning", 0)
     infos = []
 
     def page_done(n, image):
         report("page", n)
-        infos.append(analyze_page(image, args, args.resolution, osd))
+        infos.append(analyze_page(image, analysis, args.resolution, osd))
         if infos[-1]["blank"]:
             report("blank", n)
         elif corrections_done(infos[-1]):
@@ -934,11 +963,8 @@ def scan_to_file(args, out, device=None, on_progress=None, should_stop=None,
         if on_page_image:
             on_page_image(n, image, infos[-1])
 
-    try:
-        pages, dpi, complete = scan(device["service"], args, caps, on_page=page_done,
+    pages, dpi, complete = run_scan(device, args, caps, on_page=page_done,
                                     should_stop=should_stop)
-    except SoapFault as e:
-        die(f"scan failed: {e}")
     if select_pages:
         keep = select_pages(pages, infos)
         if keep is None:
@@ -976,6 +1002,505 @@ def cancel(service, job_id):
                   "</wscn:CancelJobRequest>")
     except Exception:
         pass
+
+
+# --- SANE (scanimage) ----------------------------------------------------------
+# The other way to a scanner: SANE's command-line frontend scanimage (package
+# sane-utils). It reaches USB scanners and other protocols, and some backends
+# offer the scanner's own cropping and straightening (e.g. epsonds straightens
+# for Epson's ES series, where WSD rejects it). Only getting the pages differs:
+# they arrive as JPEG or TIFF files, page by page, like over WSD.
+
+BACKENDS = ("wsd", "sane")
+SANE_TIMEOUT = 60  # listing devices or options (network backends search a while)
+SANE_STOP_TIMEOUT = 15  # after asking scanimage to stop
+SANE_NO_DOCS = 7  # scanimage's exit status: the feeder is (or was) empty
+# Source names, by kind; matched without regard to case, exact names first.
+SANE_ADF_SOURCES = ("adf front", "adf", "automatic document feeder", "adf simplex",
+                    "document feeder", "adf single", "feeder")
+SANE_MODES = {"color": ("color", "colour", "24bit color", "rgb"),
+              "gray": ("gray", "grey", "grayscale", "greyscale", "8bit gray"),
+              "bw": ("lineart", "binary", "black & white", "black and white", "monochrome")}
+# Boolean options of the scanner's own corrections, by backend (epsonds,
+# fujitsu, avision, kodak, ...).
+SANE_CROP_OPTIONS = ("adf-crp", "autocrop", "auto-crop", "hwdeskewcrop")
+SANE_SKEW_OPTIONS = ("adf-skew", "deskew", "auto-deskew", "hwdeskewcrop")
+SANE_STANDARD_RESOLUTIONS = (75, 100, 150, 200, 300, 400, 600, 1200)
+# scanimage options this tool sets itself; not allowed in sane_options.
+SANE_RESERVED = {"d", "device-name", "format", "batch", "batch-print", "batch-start",
+                 "batch-count", "batch-increment", "batch-double", "batch-prompt", "o",
+                 "output-file", "source", "mode", "resolution", "l", "t", "x", "y", "L", "f",
+                 "list-devices", "formatted-device-list", "A", "all-options", "h", "help",
+                 "brightness", "contrast", "p", "progress", "n", "dont-scan", "T", "test",
+                 "i", "icc-profile", "B", "buffer-size", "V", "version"}
+SANE_OPTION_LINE = re.compile(r"^ {4}(-{1,2}[A-Za-z0-9][\w-]*)(\[=\((.*)\)\])?\s*(.*?)\s*"
+                              r"\[([^\]]*)\]$")
+
+
+def scanimage_path():
+    path = shutil.which("scanimage")
+    if not path:
+        die("SANE needs the scanimage command (package sane-utils)")
+    return path
+
+
+def run_scanimage(args, timeout=SANE_TIMEOUT):
+    """(exit status, stdout, stderr) of scanimage with these arguments."""
+    cmd = [scanimage_path()] + args
+    log("+ " + " ".join(cmd))
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                                timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        die(f"scanimage did not answer within {timeout} seconds")
+    except OSError as e:
+        die(f"could not run scanimage: {e}")
+    return result.returncode, result.stdout, result.stderr
+
+
+def sane_device(name, vendor="", model="", kind=""):
+    """A SANE device in the shape of a WSD one (see get_device)."""
+    return {"backend": "sane", "name": name, "manufacturer": vendor, "model": model or name,
+            "type": kind, "firmware": "", "serial": "", "device_url": "", "service": name}
+
+
+def sane_devices():
+    """The scanners SANE finds (scanimage -L), as devices."""
+    code, out, err = run_scanimage(["-f", "%d\t%v\t%m\t%t%n"])
+    if code != 0:
+        die(f"scanimage could not list scanners: {last_line(err) or f'exit {code}'}")
+    found = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 4 and parts[0]:
+            found.append(sane_device(*(clean(p) for p in parts)))
+    return found
+
+
+SANE_DEBUG_CAUSE = re.compile(r"error on option \w+, cause (\w+)")
+SANE_CAUSES = {"DFED": "the scanner detected a double feed (two sheets at once)",
+               "PJ": "paper jam", "PE": "Document feeder out of documents",
+               "OPN": "the scanner's cover is open"}
+
+
+def sane_environment(device):
+    """scanimage's environment: epsonds names the cause of a scanner error
+    (like a double feed) only in its debug output."""
+    env = dict(os.environ)
+    if device["name"].startswith("epsonds:"):
+        env.setdefault("SANE_DEBUG_EPSONDS", "1")
+    return env
+
+
+def sane_error(text):
+    """The reason a scan stopped, from scanimage's messages."""
+    causes = SANE_DEBUG_CAUSE.findall(text)
+    if causes:
+        cause = causes[-1].strip()
+        return SANE_CAUSES.get(cause, SANE_CAUSES.get(cause[:2], f"scanner error {cause}"))
+    return last_line(text)
+
+
+def last_line(text):
+    """scanimage's last message, preferring its own error lines."""
+    lines = [clean(line) for line in text.splitlines() if line.strip()]
+    errors = [line for line in lines if line.startswith("scanimage:")]
+    return (errors or lines or [""])[-1]
+
+
+def find_sane_device(name=None, model=None):
+    """The SANE device called `name`, or the only one SANE finds (optionally
+    narrowed down by `model`)."""
+    if name:
+        scanimage_path()  # missing: say so, rather than a missing model
+        try:
+            listed = sane_devices()  # for the vendor and model
+        except ScanError:
+            listed = []
+        for device in listed:
+            if device["name"] == name:
+                return device
+        return sane_device(name)  # e.g. a network scanner only found by its name
+    found = [d for d in sane_devices() if model_matches(d, model)]
+    if not found:
+        raise ScannerNotFound("SANE finds no scanner" + (f" matching {model!r}" if model else "")
+                              + "; check with: scanimage -L")
+    if len(found) > 1:
+        raise ScannerChoiceNeeded(f"{len(found)} SANE scanners found ("
+                                  + "; ".join(d["name"] for d in found) + "); pass --device NAME")
+    return found[0]
+
+
+def find_device(backend="wsd", host=None, device=None, model=None):
+    """The scanner to use, over WSD (host/model) or SANE (device/model)."""
+    if backend == "sane":
+        return find_sane_device(device, model)
+    return find_scanner(host, model)
+
+
+def device_capabilities(device):
+    """The scanner's capabilities (see parse_capabilities), over its backend."""
+    if device.get("backend") == "sane":
+        return sane_capabilities(device)
+    try:
+        return get_capabilities(device["service"])
+    except SoapFault as e:
+        die(f"could not read scanner capabilities: {e}")
+
+
+def device_address(device):
+    """Where the scanner is: its network address (WSD) or SANE device name."""
+    if device.get("backend") == "sane":
+        return device["name"]
+    return urlsplit(device["device_url"]).hostname
+
+
+def parse_sane_options(text):
+    """scanimage -A output -> {name: option}; name without dashes. An option:
+    values (list of strings) or range (low, high, step), unit, default
+    (string), active, bool (a yes/no switch)."""
+    options = {}
+    for line in text.splitlines():
+        match = SANE_OPTION_LINE.match(line.rstrip())
+        if not match:
+            continue
+        flag, bool_values, constraint, default = (match.group(1), match.group(3),
+                                                  match.group(4), match.group(5))
+        option = {"values": None, "range": None, "unit": "", "default": default,
+                  "active": default != "inactive", "bool": bool_values is not None}
+        if bool_values is not None:
+            option["values"] = bool_values.split("|")
+        else:
+            units = re.match(r"^(.*?)(dpi|mm|%|us|pel|bit)?(?: \(in steps of ([\d.]+)\))?$",
+                             constraint)
+            body, option["unit"], step = units.group(1), units.group(2) or "", units.group(3)
+            low_high = re.fullmatch(r"(-?[\d.]+)\.\.(-?[\d.]+)", body)
+            if low_high:
+                option["range"] = (float(low_high.group(1)), float(low_high.group(2)),
+                                   float(step) if step else 0.0)
+            elif body and not body.startswith("<"):
+                option["values"] = body.split("|")
+        options[flag.lstrip("-")] = option
+    return options
+
+
+def _sane_pick(values, wanted):
+    """The first of `values` that matches one of `wanted` (exactly, then as a
+    word in it), ignoring case."""
+    lower = [v.lower() for v in values]
+    for name in wanted:
+        if name in lower:
+            return values[lower.index(name)]
+    for name in wanted:
+        for value, low in zip(values, lower):
+            if re.search(rf"\b{re.escape(name)}\b", low):
+                return value
+    return None
+
+
+def sane_switches_kept(device, names):
+    """Those of the on/off options `names` that stay on when scanimage sets
+    them. scanimage always sets the scan area last, and some backends switch
+    options off then (epsonds its own cropping), so they can't be used."""
+    if not names:
+        return set()
+    code, out, _err = run_scanimage(["-A", "-d", device["name"]]
+                                    + [f"--{name}=yes" for name in sorted(names)])
+    options = parse_sane_options(out) if code == 0 else {}
+    return {name for name in names if options.get(name, {}).get("default") == "yes"}
+
+
+def sane_capabilities(device):
+    """scanimage -A for the device, in the shape of parse_capabilities() (so
+    the settings are checked and offered the same way), plus "sane": what
+    the options are called on this backend."""
+    code, out, err = run_scanimage(["-A", "-d", device["name"]])
+    options = parse_sane_options(out)
+    if code != 0 or not options:
+        raise ScannerNotFound(f"SANE scanner {device['name']} is not available: "
+                              + (last_line(err) or f"exit {code}"))
+
+    def values(name):
+        option = options.get(name)
+        return (option["values"] or []) if option and option["active"] else []
+
+    sources = values("source")
+    duplex = next((s for s in sources if "duplex" in s.lower()), None)
+    adf = _sane_pick([s for s in sources if not re.search(r"duplex|back|rear", s.lower())],
+                     SANE_ADF_SOURCES)
+    modes, mode_names = {}, values("mode")
+    depths = values("depth")
+
+    def depth(bits):
+        found = next((d for d in depths if re.match(rf"{bits}(bit)?$", d.lower())), None)
+        return ["--depth", found] if found else []
+
+    for ours, names in SANE_MODES.items():
+        found = _sane_pick(mode_names, names)
+        if found:
+            modes[ours] = ["--mode", found] + depth(1 if ours == "bw" else 8)
+    gray = modes.get("gray")
+    if "bw" not in modes and gray and depth(1):  # e.g. gray with 1 bit per sample
+        modes["bw"] = gray[:2] + depth(1)
+    if not mode_names:  # nothing to choose: whatever the scanner does
+        modes = {"color": [], "gray": [], "bw": []}
+
+    resolution = options.get("resolution") or {}
+    if resolution.get("values"):
+        resolutions = sorted({int(float(v)) for v in resolution["values"]
+                              if re.fullmatch(r"\d+(\.\d+)?", v)})
+    elif resolution.get("range"):
+        low, high, _step = resolution["range"]
+        resolutions = [r for r in SANE_STANDARD_RESOLUTIONS if low <= r <= high]
+    else:
+        resolutions = []
+
+    def extent(name):  # in mm
+        option = options.get(name)
+        if option and option["range"] and option["unit"] == "mm" and option["active"]:
+            return option["range"][1]
+        return None
+
+    width, height = extent("x"), extent("y")
+    geometry = (width, height) if width and height else None
+
+    def switch(names):
+        return next((n for n in names if n in options and options[n]["bool"]
+                     and options[n]["active"]), None)
+
+    crop, skew = switch(SANE_CROP_OPTIONS), switch(SANE_SKEW_OPTIONS)
+    kept = sane_switches_kept(device, {crop, skew} - {None})
+    crop, skew = (crop if crop in kept else None), (skew if skew in kept else None)
+    colors = [COLOR_ENTRIES[m] for m in ("color", "gray", "bw") if m in modes]
+    return {
+        "state": "Idle", "reasons": [],
+        "formats": [JPEG_FORMATS[0], TIFF_FORMAT],  # scanimage --format=jpeg / tiff
+        "has_adf": bool(adf or duplex) or not sources,
+        "has_platen": any("flatbed" in s.lower() for s in sources),
+        "duplex": bool(duplex),
+        "colors": colors, "resolutions": resolutions,
+        "back_colors": colors, "back_resolutions": resolutions,
+        "min_size": None,
+        "max_size": tuple(round(v / 25.4 * 1000) for v in geometry) if geometry else None,
+        "optical_resolution": None,
+        "description": {"name": device["name"], "info": device.get("type", ""), "location": ""},
+        "conditions": [],
+        "device_settings": {"content_types": [], "auto_size": None, "auto_exposure": None,
+                            "brightness": "brightness" in options and bool(
+                                options["brightness"]["range"]),
+                            "contrast": "contrast" in options and bool(
+                                options["contrast"]["range"]),
+                            "quality": None, "scaling": None, "rotations": [], "other": []},
+        "sane": {"source": {"adf": adf, "duplex": duplex}, "mode": modes,
+                 "geometry": geometry, "crop": crop, "skew": skew, "options": options},
+    }
+
+
+def parse_sane_extra(text):
+    """The sane_options setting: further scanimage options for the backend,
+    e.g. "--adf-justification-x=center". Raises ValueError."""
+    try:
+        tokens = shlex.split(text or "")
+    except ValueError as e:
+        raise ValueError(f"cannot read the options: {e}")
+    for token in tokens:
+        match = re.fullmatch(r"--([A-Za-z0-9][\w-]*)(=.*)?", token)
+        if not match:
+            raise ValueError(f"expected options like --name=value, got {token!r}")
+        if match.group(1) in SANE_RESERVED:
+            raise ValueError(f"--{match.group(1)} is set by this tool")
+    return tokens
+
+
+def sane_hardware(args, caps):
+    """The scanner's own corrections this scan uses: {"crop": option or None,
+    "skew": option or None}. Its cropping only if it also straightens or no
+    straightening is wanted: straightening in this tool needs the sheet's
+    edges, which the scanner's cropping removes."""
+    sane = caps.get("sane")
+    if not sane or not getattr(args, "hardware_corrections", True):
+        return {"crop": None, "skew": None}
+    skew = sane["skew"] if getattr(args, "deskew", False) else None
+    crop = sane["crop"] if getattr(args, "paper", "") == "auto" else None
+    if crop and getattr(args, "deskew", False) and not skew:
+        crop = None
+    return {"crop": crop, "skew": skew}
+
+
+def _sane_value(option, value):
+    """Our brightness/contrast (EXPOSURE_RANGE) in the option's range."""
+    low, high, step = option["range"]
+    scaled = low + (value - EXPOSURE_RANGE[0]) / (EXPOSURE_RANGE[1] - EXPOSURE_RANGE[0]) * (high - low)
+    if step:
+        scaled = low + round((scaled - low) / step) * step
+    return _num(min(high, max(low, scaled)))
+
+
+def sane_command(device, args, caps, pattern, fmt):
+    """scanimage arguments for one feeder scan into files named like pattern."""
+    sane = caps["sane"]
+    cmd = ["-d", device["name"]]
+    source = sane["source"].get(args.source)
+    if source:
+        cmd += ["--source", source]
+    cmd += sane["mode"].get(args.mode, [])
+    cmd += ["--resolution", str(args.resolution)]
+    if sane["geometry"]:  # in mm; paper "auto": the whole scan area
+        max_w, max_h = sane["geometry"]
+        paper = PAPER_MM.get(args.paper)
+        width, height = (min(max_w, paper[0]), min(max_h, paper[1])) if paper else (max_w, max_h)
+        cmd += ["-l", "0", "-t", "0", "-x", _num(width), "-y", _num(height)]
+    for name in ("brightness", "contrast"):
+        value = getattr(args, name, None)
+        option = sane["options"].get(name)
+        if value is not None and option and option["range"]:
+            cmd += [f"--{name}", _sane_value(option, value)]
+    for option in dict.fromkeys(sane_hardware(args, caps).values()):
+        if option:
+            cmd.append(f"--{option}=yes")
+    cmd += parse_sane_extra(getattr(args, "sane_options", "") or "")
+    return cmd + [f"--format={fmt}", f"--batch={pattern}", "--batch-print"]
+
+
+def _stop_scanimage(proc):
+    """Ask scanimage to cancel (like Ctrl+C), then make sure it is gone."""
+    if proc.poll() is None:
+        try:
+            proc.send_signal(signal.SIGINT)
+            proc.wait(SANE_STOP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        except OSError:
+            pass
+
+
+def scan_sane(device, args, caps, on_page=None, should_stop=None):
+    """Run one feeder scan with scanimage; like scan()."""
+    fmt, ext = ("tiff", "tif") if uses_tiff(args.mode, args.lossless) else ("jpeg", "jpg")
+    with tempfile.TemporaryDirectory(prefix="wsdscan-sane-") as tmp:
+        cmd = [scanimage_path()] + sane_command(device, args, caps,
+                                                os.path.join(tmp, f"page%04d.{ext}"), fmt)
+        log("+ " + " ".join(cmd))
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    stdin=subprocess.DEVNULL, text=True, errors="replace",
+                                    cwd=tmp, env=sane_environment(device))
+        except OSError as e:
+            die(f"could not run scanimage: {e}")
+        names, errors = queue.Queue(), []
+
+        def read_names():
+            for line in proc.stdout:
+                names.put(line.strip())
+            names.put(None)
+
+        threading.Thread(target=read_names, daemon=True).start()
+        stderr_reader = threading.Thread(target=lambda: errors.extend(proc.stderr), daemon=True)
+        stderr_reader.start()
+        pages, total, complete = [], 0, True
+        try:
+            while True:
+                if should_stop and should_stop():
+                    raise ScanCancelled("scan cancelled")
+                try:
+                    name = names.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if name is None:
+                    break
+                path = os.path.realpath(os.path.join(tmp, name))
+                if os.path.dirname(path) != os.path.realpath(tmp) or not os.path.isfile(path):
+                    continue  # not one of the page files
+                if os.path.getsize(path) > MAX_RESPONSE_BYTES:
+                    die("scanned page is too large")
+                with open(path, "rb") as f:
+                    image = f.read()
+                os.remove(path)
+                if image_kind(image) != ("tiff" if fmt == "tiff" else "jpeg"):
+                    die(f"scanimage wrote no {fmt.upper()} image (needs sane-utils 1.0.28 or "
+                        "later for JPEG)")
+                image_size(image)  # a plausible image
+                pages.append(image)
+                total += len(image)
+                if on_page:
+                    on_page(len(pages), image)
+                else:
+                    print(f"  page {len(pages)}", file=sys.stderr)
+                if len(pages) >= MAX_PAGES or total > MAX_SCAN_BYTES:
+                    print(f"warning: stopping after {len(pages)} page(s): more than one scan "
+                          "job should hold", file=sys.stderr)
+                    complete = False
+                    _stop_scanimage(proc)
+                    break
+        except BaseException:
+            _stop_scanimage(proc)
+            raise
+        finally:
+            code = proc.wait()
+            stderr_reader.join(5)
+            proc.stdout.close()
+            proc.stderr.close()
+    message = sane_error("".join(errors))
+    if not pages:
+        if code == SANE_NO_DOCS or "out of documents" in message.lower():
+            die("no pages scanned - is paper loaded in the feeder?")
+        die(f"scanimage failed (exit {code})" + (f": {message}" if message else ""))
+    if complete and code not in (0, SANE_NO_DOCS):
+        print(f"warning: scan stopped after {len(pages)} page(s): {message or f'exit {code}'}",
+              file=sys.stderr)
+        complete = False
+    return pages, args.resolution, complete
+
+
+def run_scan(device, args, caps, on_page=None, should_stop=None):
+    """One feeder scan over the device's backend: (images, dpi, complete)."""
+    if device.get("backend") == "sane":
+        return scan_sane(device, args, caps, on_page, should_stop)
+    try:
+        return scan(device["service"], args, caps, on_page=on_page, should_stop=should_stop)
+    except SoapFault as e:
+        die(f"scan failed: {e}")
+
+
+def _sane_unusable(sane, names):
+    """'no', or why an option the backend offers isn't used."""
+    offered = next((n for n in names if sane["options"].get(n, {}).get("bool")), None)
+    return (f"no (--{offered} is offered, but the backend switches it off when scanimage "
+            "sets the scan area)") if offered else "no"
+
+
+def print_sane_info(device, caps):
+    sane = caps["sane"]
+    names = {"color": "color", "gray": "gray", "bw": "black & white"}
+    rows = [("device", device["name"]),
+            ("manufacturer", device["manufacturer"] or "?"),
+            ("model", device["model"]),
+            ("type", device.get("type") or "?"),
+            ("feeder", ("yes, duplex" if caps["duplex"] else "yes, one-sided")
+                       if caps["has_adf"] else "no"),
+            ("sources", f"one side: {sane['source']['adf'] or '-'}, "
+                        f"both sides: {sane['source']['duplex'] or '-'}"),
+            ("modes", ", ".join(f"{names[m]}: {' '.join(a[1:2]) or 'default'}"
+                                for m, a in sane["mode"].items()) or "?"),
+            ("resolutions", ", ".join(map(str, caps["resolutions"])) or "?"),
+            ("max size", fmt_size(caps["max_size"])),
+            ("own cropping", f"yes (--{sane['crop']}), used with --paper auto"
+                             if sane["crop"] else _sane_unusable(sane, SANE_CROP_OPTIONS)),
+            ("own deskewing", f"yes (--{sane['skew']}), used with --deskew"
+                              if sane["skew"] else _sane_unusable(sane, SANE_SKEW_OPTIONS))]
+    for label, value in rows:
+        print(f"{label + ':':<18}{value}")
+    print()
+    print("All options of the SANE backend (further ones can be set with --sane-options):")
+    for name, option in sane["options"].items():
+        if option["range"]:
+            low, high, _step = option["range"]
+            choices = f"{_num(low)}..{_num(high)}{option['unit']}"
+        else:
+            choices = "|".join(option["values"] or []) or "(button or text)"
+        state = "" if option["active"] else " (inactive)"
+        print(f"  --{name} {choices} [{option['default']}]{state}")
 
 
 # --- Check mode --------------------------------------------------------------
@@ -1508,15 +2033,20 @@ def jpeg_block_grid(data):
 # embedded unchanged, only placed, rotated and cut to the page.
 
 BLOCK = 8  # pixels per grid block
-PAPER_MIN_CONTRAST = 20  # the sheet must be this much brighter than the backing
+PAPER_MIN_CONTRAST = 12  # the sheet must be this much brighter than the backing
 PAPER_MIN_AREA = 0.02  # of the image; smaller "sheets" are specks
 PAPER_MIN_RECT_FILL = 0.85  # sheet outline / its rectangle; less is not a sheet
-PAPER_INSET = 0.5  # blocks cut off the sheet's edges: the outline found lies about
+PAPER_INSET = 0.25  # blocks cut off the sheet's edges: the outline found lies about
 # this much outside the sheet (edge blocks are partly backing)
 EDGE_SHADOW_MM = 0.35  # and the shadow along a sheet's edge
 SKEW_MIN = 0.15  # degrees; less is not worth straightening
 SKEW_MAX = 20  # degrees; more is not a crooked feed
 PAD_FLAT = 4  # brightness range of a padding row (the same color right to the end)
+FILL_THIN = 3  # bright areas narrower than this many blocks beside fill are noise
+WEDGE_MAX = 0.05  # bright runs at an image edge up to this share of its size can be fill
+PAD_BOUNDARY = 12  # backing differs this much from the padding (rear side: little)
+PAD_BACKING_MIN = 100  # and is brighter than this (darker: text)
+PAD_BACKING_EVEN = 12  # brightness range of the middle half of backing cells
 UNIFORM_ROW = 16  # brightness range of a row without a sheet edge (e.g. backing blending
 # into padding); a row with paper and backing spans far more
 # Orientation from Tesseract (--psm 0): at least this confidence. Pages with
@@ -1601,7 +2131,7 @@ def scanned_rows(columns, rows, values):
     """Grid rows up to the padding after the sheet: some scanners fill the
     rest of the scan length with rows of one color once the sheet has gone
     through. All rows if there is none, or it is the paper's color (black &
-    white: cannot tell)."""
+    white: cannot tell), unless backing shows between the sheet and it."""
     def row(r):
         return values[r * columns:(r + 1) * columns]
 
@@ -1615,9 +2145,29 @@ def scanned_rows(columns, rows, values):
                and abs(sum(row(end - 1)) / columns - pad) <= PAD_FLAT):
             end -= 1
         above = sorted(values[:end * columns])
-        if above and abs(above[int(len(above) * 0.9)] - pad) <= 2 * PAD_FLAT:
+        boundary = _backing_above_padding(columns, rows, values, pad)
+        if above and not boundary and abs(above[int(len(above) * 0.9)] - pad) <= 2 * PAD_FLAT:
             end = rows
     return end
+
+
+def _backing_above_padding(columns, rows, values, pad):
+    """Whether backing (gray, not the padding's color nor text's black) lies
+    right above the padding in most columns: it sets the padding apart even
+    from paper of the same color. Column by column, as the padding of an
+    image the scanner straightened itself starts on a slant."""
+    found = []
+    for c in range(columns):
+        r = rows - 1
+        while r >= 0 and abs(values[r * columns + c] - pad) <= PAD_FLAT:
+            r -= 1
+        cells = [values[i * columns + c] for i in (r, r - 1) if i >= 0]  # maybe blended
+        if cells and PAD_BACKING_MIN < min(cells) < pad - PAD_BOUNDARY:
+            found.append(min(cells))
+    found.sort()
+    # Backing is one even gray; the edges of text above it would vary.
+    return (len(found) >= columns / 2
+            and found[len(found) * 3 // 4] - found[len(found) // 4] <= PAD_BACKING_EVEN)
 
 
 def find_paper(columns, rows, values):
@@ -1639,11 +2189,20 @@ def find_paper(columns, rows, values):
     inside = [v for r in range(first, end) for v in row(r)]
     border = ([values[r * columns] for r in range(first, end)]  # mostly backing
               + [values[r * columns + columns - 1] for r in range(first, end)] + row(first))
-    backing = sorted(border)[len(border) // 2]
     paper = sorted(inside)[int(len(inside) * 0.9)]
+    # The backing is the largest even gray (the border can be mostly the
+    # paper-white fill around an image the scanner straightened itself).
+    gray = [v for v in inside if PAD_BACKING_MIN < v < paper - 2 * PAD_FLAT]
+    if len(gray) >= len(inside) / 10:
+        bins = collections.Counter(int(v) // 4 for v in gray)
+        peak = max(bins, key=lambda b: (bins[b], -b))
+        near = sorted(v for v in gray if int(v) // 4 == peak)
+        backing = near[len(near) // 2]
+    else:
+        backing = sorted(border)[len(border) // 2]
     if paper - backing < PAPER_MIN_CONTRAST:
         return trimmed  # no contrast (e.g. white backing): only cut the padding
-    threshold = (backing + paper) / 2
+    threshold = paper - (paper - backing) / 3  # closer to the paper: light backing varies
 
     def coverage(v):  # share of a block covered by paper, from its brightness
         return min(1.0, max(0.0, (v - backing) / (paper - backing)))
@@ -1652,6 +2211,8 @@ def find_paper(columns, rows, values):
     edge_end = end - 1 if end < rows else end
     lit = [[v > threshold for v in row(r)] if first <= r < edge_end and spread(r) > UNIFORM_ROW
            else [False] * columns for r in range(rows)]
+    if not _clear_fill(lit, columns, rows, edge_end, end < rows):
+        _clear_edge_wedges(lit, columns, edge_end)
     points = []
     for r in range(first, edge_end):  # left and right edge in each row
         cells = lit[r]
@@ -1684,6 +2245,65 @@ def find_paper(columns, rows, values):
             or abs(angle) > SKEW_MAX):
         return trimmed
     return (cx, cy, max(1.0, width - 2 * PAPER_INSET), max(1.0, height - 2 * PAPER_INSET), angle)
+
+
+def _clear_fill(lit, columns, rows, end, padded):
+    """Unmark bright areas that reach the image's left or right edge or the
+    padding (padded: rows from `end` on): the fill around an image the scanner
+    straightened itself. Only if what is left is still large enough for a
+    sheet (else the sheet itself reaches them), with thin specks and streaks
+    on the backing. The first row (where the
+    sheet starts and may run into the fill) only goes with the cell below.
+    Whether it did."""
+    seen, fill, rest = set(), [], 0
+    for start in ((r, c) for r in range(1, end) for c in range(columns) if lit[r][c]):
+        if start in seen:
+            continue
+        seen.add(start)
+        todo, area, touches = [start], [], False
+        while todo:
+            r, c = todo.pop()
+            area.append((r, c))
+            touches = touches or c in (0, columns - 1) or (padded and r == end - 1)
+            for n in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                if 1 <= n[0] < end and 0 <= n[1] < columns and lit[n[0]][n[1]] and n not in seen:
+                    seen.add(n)
+                    todo.append(n)
+        rows_in, columns_in = {r for r, _c in area}, {c for _r, c in area}
+        thin = min(max(rows_in) - min(rows_in), max(columns_in) - min(columns_in)) < FILL_THIN
+        if touches or thin:  # (thin: specks or streaks on light backing)
+            fill.append(area)
+        else:
+            rest += len(area)
+    if not fill or rest < PAPER_MIN_AREA * columns * rows:
+        return False
+    for area in fill:
+        for r, c in area:
+            lit[r][c] = False
+    if end > 1:
+        lit[0] = [a and b for a, b in zip(lit[0], lit[1])]
+    return True
+
+
+def _clear_edge_wedges(lit, columns, rows):
+    """Unmark bright runs at the image's edges that backing parts from the
+    rest: the fill around an image the scanner straightened itself (epsonds
+    fills with white), not the sheet. Rows from `rows` on are padding."""
+    def clear(cells, length):
+        for order in (range(len(cells)), range(len(cells) - 1, -1, -1)):
+            order = list(order)
+            run = next((n for n, i in enumerate(order) if not cells[i]), len(order))
+            if 0 < run <= WEDGE_MAX * length and not any(cells[i] for i in order[run:run + 2]):
+                for i in order[:run]:
+                    cells[i] = False
+        return cells
+
+    for r in range(rows):  # rows, then columns (a slanted fill leaves corners)
+        clear(lit[r], columns)
+    for c in range(columns):
+        column = clear([lit[r][c] for r in range(rows)], rows)
+        for r in range(rows):
+            lit[r][c] = column[r]
 
 
 def sheet_in_pixels(rect, size, dpi):
@@ -1764,6 +2384,10 @@ def analyze_page(image, args, dpi, osd=None):
       use     {correction: True}: page_layout() applies these; may be changed
       turn    clockwise degrees (0, 90, 180, 270) to turn the page by hand on
               top of the corrections; 0, may be changed (the app's review)
+      manual  set by hand (the app's review), else missing: (cx, cy, width,
+              height, angle) of the page in the image, in pixels; angle in
+              degrees (clockwise) like paper's. Replaces crop and skew while
+              use["manual"] is not False; rotate and turn still apply.
     osd: Tesseract path for orientation detection (None: not wanted).
     """
     info = {"size": (0, 0), "blank": False, "paper": None, "crop": False,
@@ -1823,6 +2447,11 @@ def page_geometry(info):
     on screen) around it."""
     width, height = info["size"]
     use = info["use"]
+    rotate = page_turn(info)
+    if info.get("manual") and use.get("manual", True):
+        cx, cy, w, h, angle = info["manual"]
+        page_w, page_h = (h, w) if rotate in (90, 270) else (w, h)
+        return page_w, page_h, cx, cy, rotate - angle
     skew = info["skew"] if use.get("skew") else 0.0
     if info["crop"] and use.get("crop") and info["paper"]:
         cx, cy, w, h, angle = info["paper"]
@@ -1839,7 +2468,6 @@ def page_geometry(info):
             cx, cy, w, h = (x0 + x1) / 2, (y0 + y1) / 2, max(1, x1 - x0), max(1, y1 - y0)
     else:
         cx, cy, w, h = width / 2, height / 2, width, height
-    rotate = page_turn(info)
     page_w, page_h = (h, w) if rotate in (90, 270) else (w, h)
     return page_w, page_h, cx, cy, rotate - skew
 
@@ -1851,6 +2479,15 @@ def page_turn(info):
     return (rotate + info.get("turn", 0)) % 360
 
 
+def manual_geometry(info):
+    """The page as it is now, as an info["manual"] value: (cx, cy, width,
+    height, angle), the size before turning."""
+    page_w, page_h, cx, cy, angle = page_geometry(info)
+    rotate = page_turn(info)
+    w, h = (page_h, page_w) if rotate in (90, 270) else (page_w, page_h)
+    return cx, cy, w, h, (rotate - angle + 180) % 360 - 180
+
+
 def crop_size(info):
     """(width, height) in pixels of the part of the scan the page is cut
     to (crop on, before turning)."""
@@ -1860,11 +2497,14 @@ def crop_size(info):
 
 
 def corrections_done(info):
-    """The corrections that change this page, e.g. ["crop", "rotate"]."""
+    """The corrections that change this page, e.g. ["crop", "rotate"]
+    ("manual" instead of crop and skew when set by hand)."""
     done = []
-    if info["crop"] and info["paper"]:
+    if info.get("manual"):
+        done.append("manual")
+    elif info["crop"] and info["paper"]:
         done.append("crop")
-    if info["skew"]:
+    if info["skew"] and not info.get("manual"):
         done.append("skew")
     if info["rotate"]:
         done.append("rotate")
@@ -1930,7 +2570,10 @@ def text_layer(words, info):
         turn = page_turn(info)
     else:
         turn = info.get("orientation", info.get("rotate", 0))
-    angle = info["paper"][4] if info and info.get("paper") else 0.0
+    if info and info.get("manual") and info["use"].get("manual", True):
+        angle = info["manual"][4]
+    else:
+        angle = info["paper"][4] if info and info.get("paper") else 0.0
     phi = math.radians(angle - turn)  # reading direction in the image
     cos, sin = math.cos(phi), math.sin(phi)
     ops = ["BT 3 Tr"]
@@ -2336,6 +2979,10 @@ CONFIG_DEFAULTS = {
     "deskew": False,  # straighten pages that were fed crooked
     "auto_rotate": False,  # turn pages upright (Tesseract orientation detection)
     "crop": "sides",  # paper "auto": cut the sheet's left and right edges, or "all" four
+    "backend": "wsd",  # how to reach the scanner: "wsd" (network, built in) or "sane"
+    "device": "",  # SANE device name, e.g. epsonds:net:192.168.2.13 ("" = the only one)
+    "hardware_corrections": True,  # SANE: the scanner's own cropping/straightening if offered
+    "sane_options": "",  # SANE: further scanimage options, e.g. --adf-justification-x=center
 }
 SCANNER_SECTION = "scanner "  # profiles: [scanner Office], [scanner Home], ...
 CONFIG_CHOICES = {
@@ -2344,6 +2991,7 @@ CONFIG_CHOICES = {
     "mode": tuple(COLOR_ENTRIES),
     "paper": tuple(PAPER_SIZES),
     "crop": CROP_CHOICES,
+    "backend": BACKENDS,
 }
 CONFIG_HEADER = ("# wsdscan settings, shared by the wsdscan command and the Scan to PDF app.\n"
                  "# [scan] holds the defaults, [scanner NAME] sections configure scanners\n"
@@ -2370,7 +3018,8 @@ def parse_config_value(key, text):
             raise ValueError(str(e))
     if key == "ocr_lang" and text and not re.fullmatch(r"[a-z_]+(\+[a-z_]+)*", text):
         raise ValueError("expected Tesseract language codes like deu+eng")
-    if key in ("lossless", "ocr", "review_pages", "skip_blank", "deskew", "auto_rotate"):
+    if key in ("lossless", "ocr", "review_pages", "skip_blank", "deskew", "auto_rotate",
+               "hardware_corrections"):
         if text.lower() not in ("true", "false", "yes", "no", "1", "0", "on", "off"):
             raise ValueError("expected true or false")
         return text.lower() in ("true", "yes", "1", "on")
@@ -2380,6 +3029,10 @@ def parse_config_value(key, text):
         return int(text)
     if key in CONFIG_CHOICES and text not in CONFIG_CHOICES[key]:
         raise ValueError(f"expected one of {', '.join(CONFIG_CHOICES[key])}")
+    if key == "sane_options":
+        parse_sane_extra(text)
+    if key == "device" and text and (not text.isprintable() or text.startswith("-")):
+        raise ValueError("expected a SANE device name, e.g. epsonds:net:192.168.2.13")
     if key == "filename" and (not text or "/" in text):
         raise ValueError("expected a file name without '/'")
     if key == "outdir" and text:
@@ -2538,6 +3191,21 @@ def unique_path(path):
 
 # --- CLI ---------------------------------------------------------------------
 
+def sane_device_value(text):
+    try:
+        return parse_config_value("device", text) or None
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
+
+
+def sane_options_value(text):
+    try:
+        parse_sane_extra(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
+    return text
+
+
 def resolution_value(text):
     value = parse_int(text, 50, 2400)
     if value is None:
@@ -2583,8 +3251,27 @@ def parse_args(argv=None):
     p.add_argument("--model", default=os.environ.get("WSDSCAN_MODEL") or cfg["model"] or None,
                    help="only use a scanner whose manufacturer/model contains this text, "
                         "e.g. ES-580W (case-insensitive; default: $WSDSCAN_MODEL or config)")
+    p.add_argument("--backend", choices=BACKENDS, default=cfg["backend"],
+                   help="how to reach the scanner: wsd (network, built in) or sane (SANE's "
+                        "scanimage, e.g. for USB scanners or the scanner's own straightening) "
+                        "(default: %(default)s)")
+    p.add_argument("--device", default=cfg["device"] or None, type=sane_device_value,
+                   metavar="NAME",
+                   help="with --backend sane: the SANE device, e.g. epsonds:net:192.168.2.13 "
+                        "(see --list --backend sane; default: the only one SANE finds)")
+    p.add_argument("--hardware-corrections", action=argparse.BooleanOptionalAction,
+                   default=cfg["hardware_corrections"],
+                   help="with --backend sane: let the scanner cut (--paper auto) and "
+                        "straighten (--deskew) pages itself if its backend offers it "
+                        "(default: %(default)s)")
+    p.add_argument("--sane-options", default=cfg["sane_options"], type=sane_options_value,
+                   metavar="OPTIONS",
+                   help="with --backend sane: further scanimage options for the backend, "
+                        "written with '=', e.g. --sane-options='--adf-justification-x=center' "
+                        "(see --info)")
     p.add_argument("-L", "--list", action="store_true",
-                   help="list the WSD scanners found (respects --host and --model), then exit")
+                   help="list the scanners found (WSD, or SANE with --backend sane; respects "
+                        "--host and --model), then exit")
     p.add_argument("--outdir", default=cfg["outdir"] or ".",
                    help="directory for the default file name (default: %(default)s)")
     p.add_argument("-f", "--force", action="store_true", help="overwrite existing output")
@@ -2659,9 +3346,10 @@ def show_config(args):
     if scanners:
         print("configured scanners:")
         for name, entries in scanners.items():
-            where = entries.get("host") or "automatic"
+            where = (f"SANE {entries.get('device') or '(the only scanner)'}"
+                     if entries.get("backend") == "sane" else entries.get("host") or "automatic")
             extra = ", ".join(f"{k}={format_config_value(v)}" for k, v in entries.items()
-                              if k != "host")
+                              if k not in ("host", "device", "backend"))
             marks = " (default)" if name == default else ""
             print(f"  {name}{marks}: {where}" + (f"; {extra}" if extra else ""))
     engines = ocr_engines()
@@ -2670,6 +3358,8 @@ def show_config(args):
     if engines:
         print(f"OCR languages: {', '.join(tesseract_languages()) or '?'} "
               f"(automatic: {default_ocr_languages()})")
+    print("SANE (--backend sane): " + (shutil.which("scanimage") or
+                                       "not installed (install sane-utils)"))
     print("Orientation detection (--auto-rotate): "
           + ("available" if tesseract_osd_available()
              else "not installed (install tesseract-ocr and tesseract-ocr-osd)"))
@@ -2684,26 +3374,32 @@ def main(argv=None):
         show_config(args)
         return
     if args.list:
-        list_scanners(args.host, args.model)
+        if args.backend == "sane":
+            list_sane_devices(args.model)
+        else:
+            list_scanners(args.host, args.model)
         return
 
     out = args.output or os.path.join(args.outdir, render_filename(args.filename))
     if not report_only and os.path.exists(out) and not args.force:
         die(f"{out} already exists (use --force to overwrite)")
 
-    device = find_scanner(args.host, args.model)
+    if args.check and args.backend == "sane":
+        die("--check tests the scanner's WSD settings; with SANE, use --info")
+    device = find_device(args.backend, args.host, args.device, args.model)
     service = device["service"]
     if report_only:
-        try:
-            caps = get_capabilities(service)
-        except SoapFault as e:
-            die(f"could not read scanner capabilities: {e}")
+        caps = device_capabilities(device)
+        if device.get("backend") == "sane":
+            print_sane_info(device, caps)
+            return
         print_info(device, caps)
         if args.check:
             sys.exit(run_check(service, caps, args))
         return
 
-    print(f"using scanner: {device['model']} ({service})", file=sys.stderr)
+    print(f"using scanner: {device['model']} ({'SANE ' if args.backend == 'sane' else ''}"
+          f"{service})", file=sys.stderr)
 
     blank = []
 

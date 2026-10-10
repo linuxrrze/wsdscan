@@ -586,6 +586,24 @@ class PageCorrectionTest(unittest.TestCase):
         self.assertAlmostEqual(h, 700, delta=10)
         self.assertEqual(w, AREA[0])
 
+    def test_sheet_straightened_by_scanner(self):
+        # epsonds: pure white paper, the image already straightened by the
+        # scanner, white fill in wedges at its edges and a slanted start of
+        # the padding (as white as the paper).
+        sheet = (319, 330, 438, 620, 0)
+        rows = scanned_sheet(*AREA, sheet, backing=200, paper=255, pad_from=None,
+                             marks=SHEET_TEXT)
+        for y, row in enumerate(rows):
+            left, right = int(y * 0.02), int((AREA[1] - y) * 0.02)
+            row[:left] = bytes([255]) * left
+            row[AREA[0] - right:] = bytes([255]) * right
+            for x in range(AREA[0]):
+                if y >= 700 + x * 0.03:
+                    row[x] = 255
+        info = tool.analyze_page(make_jpeg(rows), corrected(), 75)
+        self.assert_sheet(info, sheet)
+        self.assertAlmostEqual(info["length"], 720, delta=24)
+
     def test_nothing_found_on_plain_backing(self):
         rows = scanned_sheet(*AREA, (0, 0, 0, 0, 0), pad_from=None)
         info = tool.analyze_page(make_jpeg(rows), corrected(), 75)
@@ -669,6 +687,28 @@ class PageCorrectionTest(unittest.TestCase):
         self.assertEqual(tool.parse_config_value("crop", "all"), "all")
         with self.assertRaises(ValueError):
             tool.parse_config_value("crop", "top")
+
+    def test_set_by_hand(self):
+        info = tool.analyze_page(sheet_scan(), corrected(), 75)
+        info["rotate"] = 90
+        auto = tool.manual_geometry(info)
+        cx, cy, w, h, angle = info["paper"]
+        self.assertEqual(auto[2:4], (w, h), "the size before turning")
+        self.assertAlmostEqual(auto[4], angle)
+        self.assertEqual(tool.page_geometry(dict(info, manual=auto)), tool.page_geometry(info))
+        info["manual"] = (320, 400, 300, 200, -2.0)
+        self.assertEqual(tool.corrections_done(info), ["manual", "rotate"])
+        page_w, page_h, place = tool.page_layout(info)
+        self.assertEqual((page_w, page_h), (200, 300), "turned")
+        self.assertEqual(place(320, 400), (100, 150), "its center in the middle")
+        self.assertEqual(tool.crop_size(info), (300, 200))
+        # OCR text tilted by the angle set by hand (and turned upright by 90°).
+        self.assertIn("-0.0349 -0.9994 -0.9994 0.0349 ",
+                      tool.text_layer([("Hi", 10, 20, 20, 60)], info))
+        info["use"]["manual"] = False  # switched off: the automatic corrections
+        self.assertEqual(tool.page_layout(info)[:2], (h, w))
+        pdf = tool.pdf_bytes([sheet_scan()], 75, [dict(info, use={"manual": True})])
+        self.assertEqual(parse_pdf(pdf)["mediaboxes"][0], (300 * 72 / 75, 200 * 72 / 75))
 
     def test_turned_by_hand(self):
         info = tool.analyze_page(sheet_scan(), corrected(), 75)

@@ -6,6 +6,8 @@ It works with any scanner that supports WSD (Microsoft's network scan protocol: 
 
 The tool talks to the scanner directly and writes the PDF itself. It needs only Python 3, with no SANE, `scanimage` or extra packages. WSD must be enabled on the scanner, usually in its web configuration.
 
+Optionally it scans through [SANE](#sane) instead (`--backend sane`), e.g. for USB scanners, or to let the scanner cut and straighten the pages itself where its SANE backend offers that (the ES-580W does with `epsonds`).
+
 Only standard WSD features are used. Everything model-dependent (resolutions, color modes, formats, duplex, paper size, brightness/contrast) is read from the scanner at run time.
 
 ## Setup
@@ -22,6 +24,7 @@ export WSDSCAN_HOST=192.168.2.13     # or pass --host each time
 - **`--host <ip>`** (or `WSDSCAN_HOST`): use the scanner at that address.
 - **Without a host**, the tool searches the network by multicast. If exactly one WSD scanner answers, it's used. If several answer, the tool lists them and asks you to choose with `--host` or `--model`. Multicast usually fails inside Docker containers with bridge networking, so set the host there.
 - **`--model <text>`** (or `WSDSCAN_MODEL`): only use a scanner whose manufacturer or model name contains this text, case-insensitively, e.g. `--model ES-580W` or `--model epson`. Together with `--host`, it also checks that the scanner at that address is the expected one.
+- **`--backend sane --device NAME`**: scan through SANE instead, see [SANE](#sane).
 - **`--list`**: show the scanners found and exit:
 
 ```sh
@@ -68,6 +71,10 @@ Defaults below are the built-in ones; the [config file](#configuration-file) can
 | `--crop` | `sides` | with `-p auto`: `sides` cuts only the sheet's left and right edges, `all` all four (see below) |
 | `--deskew` / `--no-deskew` | off | straighten pages that were fed in crooked (see below) |
 | `--auto-rotate` / `--no-auto-rotate` | off | turn pages that are sideways or upside down upright; needs Tesseract with orientation data |
+| `--backend` | `wsd` | `wsd` (network, built in) or `sane` (through `scanimage`, see below) |
+| `--device NAME` | the only one | with `--backend sane`: the SANE device, e.g. `epsonds:net:192.168.2.13` |
+| `--hardware-corrections` / `--no-hardware-corrections` | on | with SANE: let the scanner cut (`-p auto`) and straighten (`--deskew`) pages itself, where its backend offers it |
+| `--sane-options='…'` | | with SANE: further `scanimage` options, e.g. `--sane-options='--adf-justification-x=center'` |
 | `--ocr-engine` | `auto` | `auto` (OCRmyPDF if installed, else Tesseract), `ocrmypdf`, `tesseract` |
 | `--ocr-lang` | installed languages (see below) | Tesseract languages, e.g. `deu+eng` |
 | `--show-config` | | show the config file location, the effective defaults and the installed OCR engines and languages |
@@ -120,7 +127,27 @@ Many scanners can find the paper size themselves, but not over WSD (the ES-580W 
 - **`--auto-rotate`** turns pages that are sideways or upside down upright. It uses Tesseract's orientation detection (packages `tesseract-ocr` and `tesseract-ocr-osd`), about a second per page while the next one is scanned. Pages with too little printed text, e.g. handwriting, stay as they are.
 - **The scans themselves are not changed:** each image is embedded as the scanner sent it, and the PDF places, turns and cuts it to the page. Nothing is re-compressed, and the text from `--ocr` lines up with the corrected page.
 - The tool prints what it did, e.g. `page 2: 105 x 148 mm, straightened by 3.4°, turned 180°`.
-- In the desktop app, each page preview shows an icon per correction; in the review step a click switches it off or on again, and two buttons turn a page by 90° left or right by hand.
+- In the desktop app, each page preview shows an icon per correction; in the review step a click switches it off or on again, and two buttons turn a page by 90° left or right by hand. A double click on a page opens an editor to set its edges and angle by hand.
+
+### SANE
+
+With `--backend sane`, the tool scans through SANE's `scanimage` command (`sudo apt install sane-utils`) instead of talking WSD itself. Everything after scanning stays the same: blank pages, paper size, straightening, orientation, OCR and the PDF.
+
+```sh
+./wsdscan.py --backend sane --list
+epsonds:net:192.168.2.13         Epson ES-580W (ESC/I-2)
+airscan:w0:ES-580W WSD           WSD ES-580W WSD (ip=192.168.2.13)
+./wsdscan.py --backend sane --device epsonds:net:192.168.2.13 --info
+./wsdscan.py --backend sane --device epsonds:net:192.168.2.13 -p auto --deskew stack.pdf
+```
+
+- **Why:** SANE reaches USB scanners and other protocols, and its backends know model-specific features. For the ES-580W, the `epsonds` backend (part of sane-backends) offers the scanner's own skew correction (`--adf-skew`), which the scanner refuses over WSD. It also lists the scanner's own cropping (`--adf-crp`), but switches it off as soon as `scanimage` sets the scan area, which `scanimage` always does; so this tool still cuts the pages itself. `--info` shows which of the two can be used.
+- **Finding the scanner:** `--list --backend sane` shows what SANE finds (like `scanimage -L`). `epsonds` searches the network by itself; if it doesn't find your scanner, add `net 192.168.2.13` to `/etc/sane.d/epsonds.conf`. Without `--device`, the only scanner SANE finds is used.
+- **Settings:** sides, color mode, resolution, scan area, brightness and contrast are mapped to the backend's options (`--info` shows how, and lists all its options). The backends name them differently, e.g. `ADF Duplex` or `Lineart`; settings the backend doesn't have are refused before scanning.
+- **The scanner's own corrections** (on by default): with `--paper auto`, a backend that can cut pages to the sheet does so; with `--deskew`, one that can straighten does so. This tool then doesn't do it again. A scanner that only crops is not asked to with `--deskew`, since straightening here needs the sheet's edges. `--no-hardware-corrections` leaves both to this tool.
+- **Further options** for the backend: `--sane-options='--adf-justification-x=center'`. Options this tool sets itself (device, source, mode, resolution, area, format, batch) are refused.
+- **Pages** arrive as JPEG (or TIFF for black & white and lossless) one by one, so the app's preview and blank-page detection work as with WSD. Cancelling stops `scanimage` like Ctrl+C.
+- `--check` is WSD-only; with SANE, use `--info`.
 
 ### Configuration file
 
@@ -228,6 +255,7 @@ python3 -m unittest discover -s tests -v
 Standard library only, about 40 seconds. The suite uses two fakes:
 - `tests/fake_wsd.py`: a configurable fake WSD scanner (UDP discovery and SOAP over HTTP on ephemeral localhost ports).
 - `tests/fake_ocr.py`: stand-ins for `ocrmypdf` and `tesseract`.
+- `tests/fake_sane.py`: a stand-in for `scanimage`, with the real option lists of the ES-580W's `epsonds` and `airscan` backends.
 
 It covers:
 - unit tests for JPEG and TIFF parsing, PDF writing, SOAP fault and multipart parsing, ticket building and settings validation
@@ -241,6 +269,7 @@ It covers:
 - scanner discovery and `--model`
 - progress reporting, cancelling, page selection
 - text recognition: engine and language choice, failures, the per-page progress
+- SANE (`test_sane.py`): option parsing and mapping, the scanner's own corrections, device lists, scans, an empty feeder, a jam, cancelling, files that are no pages
 - security (`test_security.py`): pinned discovery, URL schemes, redirects, proxy, size, page and image limits, crafted TIFF/JPEG headers, device texts with control characters, safe file writing, invalid command-line values
 
 The tests never read your real config file. The desktop app's tests are in `gui/tests`.
@@ -295,9 +324,9 @@ IEEE 802.1X, also supported by the scanner, authenticates the scanner to the net
 
 Install it with `gui/install.sh`, which also installs this tool as the `wsdscan` command. See [gui/README.md](gui/README.md).
 
-| After a scan, with text recognition | Reviewing pages before saving | A scanner's settings |
-|---|---|---|
-| ![Main window after a scan](docs/screenshots/main-window.png) | ![Review step with a blank page unticked](docs/screenshots/review-pages.png) | ![Scanner page in the preferences](docs/screenshots/scanner-settings.png) |
+| After a scan, with text recognition | Reviewing pages before saving | Adjusting a page | A scanner's settings |
+|---|---|---|---|
+| ![Main window after a scan](docs/screenshots/main-window.png) | ![Review step with a blank page unticked](docs/screenshots/review-pages.png) | ![Page editor: the scan with the page as a red frame](docs/screenshots/page-editor.png) | ![Scanner page in the preferences](docs/screenshots/scanner-settings.png) |
 
 ## License
 

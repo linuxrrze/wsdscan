@@ -273,11 +273,19 @@ def main():
         [list(tile.correction_buttons) for tile in window.tiles]
     settle()
     save_window(window, os.path.join(out_dir, "review-pages.png"))
+
+    # 3. The page editor (double click on a page in the review step).
+    editor = window.tiles[2].open_editor()
+    assert editor, "page editor"
+    settle(1.0)
+    save_window(window, os.path.join(out_dir, "page-editor.png"))
+    editor.close()
+    settle()
     window.finish_review(True)
     wait(lambda: window.cancel_event is None)
     pages[:] = [rgb_tiff(pixels) for pixels in rendered]
 
-    # 3. A scanner's page in the preferences.
+    # 4. A scanner's page in the preferences.
     window.scanner_choice.set_value("Office")
     wait(lambda: window.app.config["scanner"] == "Office" and window.device is not None)
     if window.last_toast:

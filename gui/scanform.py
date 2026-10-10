@@ -29,6 +29,7 @@ SOURCES = [("duplex", _("Both sides")), ("adf", _("One side"))]
 MODES = [("color", _("Color")), ("gray", _("Grayscale")), ("bw", _("Black & white"))]
 PAPERS = [("auto", _("Automatic")), ("a4", "A4"), ("a5", "A5"), ("letter", "Letter"),
           ("legal", "Legal")]
+BACKENDS = [("wsd", _("Network (WSD)")), ("sane", "SANE")]
 # Paper size "auto": which of the sheet's edges are cut (wsdscan.CROP_CHOICES).
 CROPS = [("sides", _("Left and right")), ("all", _("All sides"))]
 OCR_ENGINES = [("auto", _("Automatic")), ("ocrmypdf", "OCRmyPDF"), ("tesseract", "Tesseract")]
@@ -152,13 +153,15 @@ class OcrStatus:
 class Choices:
     """What the form may offer, narrowed down by the scanner's capabilities."""
 
-    def __init__(self, sources, modes, resolutions, lossless, lossless_hint, exposure):
+    def __init__(self, sources, modes, resolutions, lossless, lossless_hint, exposure,
+                 hardware=()):
         self.sources = sources            # [(value, label)]
         self.modes = modes                # [(value, label)]
         self.resolutions = resolutions    # [int]
         self.lossless = lossless          # "free", "on" (forced) or "off" (unavailable)
         self.lossless_hint = lossless_hint
         self.exposure = exposure          # brightness/contrast adjustable
+        self.hardware = tuple(hardware)   # the scanner's own corrections: "crop", "skew" (SANE)
 
     @classmethod
     def unknown(cls):
@@ -186,8 +189,10 @@ class Choices:
             lossless, hint = "free", ""
         ds = caps.get("device_settings") or {}
         exposure = ds.get("brightness") is not False or ds.get("contrast") is not False
+        sane = caps.get("sane") or {}
+        hardware = [name for name in ("crop", "skew") if sane.get(name)]
         return cls(sources, modes, caps.get("resolutions") or list(DEFAULT_RESOLUTIONS),
-                   lossless, hint, exposure)
+                   lossless, hint, exposure, hardware)
 
     def pick(self, options, value):
         """`value` if offered, else the first offered value."""
@@ -246,18 +251,57 @@ SCANNER_KEYS = [key for key in wsdscan.CONFIG_DEFAULTS if key != "scanner"]
 def full_profile(shared, entries):
     """All settings of a scanner: its own values, the rest from [scan].
 
-    The address and model filter are never inherited: they identify the scanner.
+    The connection, address, SANE device and model filter are never
+    inherited: they identify the scanner.
     """
     profile = {key: entries.get(key, shared.get(key, wsdscan.CONFIG_DEFAULTS[key]))
                for key in SCANNER_KEYS}
-    profile["host"] = entries.get("host", "")
-    profile["model"] = entries.get("model", "")
+    for key in IDENTITY_KEYS:
+        profile[key] = entries.get(key, wsdscan.CONFIG_DEFAULTS[key])
     return profile
 
 
+IDENTITY_KEYS = ("backend", "host", "device", "model")
+
+
+def device_entries(device):
+    """The config entries that identify a found scanner."""
+    if device.get("backend") == "sane":
+        return {"backend": "sane", "device": device["name"]}
+    return {"host": wsdscan.device_address(device)}
+
+
+def scanner_key(entries):
+    """What identifies a scanner in profiles or found devices: ("wsd", host)
+    or ("sane", device name)."""
+    if entries.get("backend") == "sane":
+        return "sane", entries.get("device") or entries.get("name") or ""
+    return "wsd", entries.get("host") or ""
+
+
+def find_all_scanners():
+    """The scanners on the network (WSD) and the ones SANE finds (if
+    installed); raises the first error if there are none."""
+    found, errors = [], []
+    searches = [lambda: wsdscan.discover(None)]
+    if wsdscan.shutil.which("scanimage"):
+        searches.append(wsdscan.sane_devices)
+    for search in searches:
+        try:
+            found += search()
+        except wsdscan.ScanError as e:
+            errors.append(e)
+    if not found and errors:
+        raise errors[0]
+    return found
+
+
 def scanner_subtitle(entries):
-    """'192.168.2.13', 'Found automatically' or with model filter / own settings."""
-    parts = [entries.get("host") or _("Found automatically")]
+    """'192.168.2.13', 'Found automatically', 'SANE · epsonds:net:…' or with model filter."""
+    if entries.get("backend") == "sane":
+        parts = ["SANE", entries.get("device") or _("Found automatically")]
+    else:
+        parts = [entries.get("host") or _("Found automatically")]
     if entries.get("model"):
         parts.append(_("model “{model}”").format(model=entries["model"]))
     return " · ".join(parts)
@@ -278,7 +322,7 @@ def scanner_from_device(device, existing, shared):
     """(name, settings) for a scanner found on the network; settings start
     as a copy of the shared defaults."""
     name = unique_scanner_name(device_name(device), existing)
-    return name, full_profile(shared, {"host": wsdscan.urlsplit(device["device_url"]).hostname})
+    return name, full_profile(shared, device_entries(device))
 
 
 def migrate_scanners(shared, scanners, device=None):
@@ -291,10 +335,12 @@ def migrate_scanners(shared, scanners, device=None):
     Returns (scanners, default_name, migrated).
     """
     scanners = {name: full_profile(shared, entries) for name, entries in scanners.items()}
-    if not scanners and (shared.get("host") or shared.get("model") or device):
-        entries = {k: shared[k] for k in ("host", "model") if shared.get(k)}
+    if not scanners and (shared.get("host") or shared.get("model") or device
+                         or shared.get("backend") == "sane"):
+        entries = {k: shared[k] for k in IDENTITY_KEYS if shared.get(k)
+                   and shared[k] != wsdscan.CONFIG_DEFAULTS[k]}
         if device and not entries:
-            entries["host"] = wsdscan.urlsplit(device["device_url"]).hostname
+            entries = device_entries(device)
         name = unique_scanner_name(
             (device_name(device) if device else "") or shared.get("model") or _("Scanner"),
             scanners)
@@ -304,17 +350,21 @@ def migrate_scanners(shared, scanners, device=None):
 
 
 def needs_reconnect(old, new, connected):
-    """After saving preferences: look for the scanner again if its address or
-    model filter changed, or if no scanner is connected right now."""
-    changed = (new.get("host"), new.get("model")) != (old.get("host"), old.get("model"))
+    """After saving preferences: look for the scanner again if its connection,
+    address, device or model filter changed, or if no scanner is connected."""
+    changed = any(new.get(key) != old.get(key) for key in IDENTITY_KEYS)
     return changed or not connected
 
 
 def scan_args(values):
     """Form values (as stored in the config) -> arguments for wsdscan.scan_to_file."""
     return SimpleNamespace(
+        backend=values.get("backend") or "wsd",
         host=values.get("host") or None,
+        device=values.get("device") or None,
         model=values.get("model") or None,
+        hardware_corrections=bool(values.get("hardware_corrections", True)),
+        sane_options=values.get("sane_options") or "",
         source=values["source"],
         mode=values["mode"],
         resolution=int(values["resolution"]),
@@ -334,7 +384,7 @@ def scan_args(values):
 
 # Icons and tooltips of the corrections shown on a page preview.
 CORRECTION_ICONS = {"crop": "wsdscan-crop-symbolic", "skew": "wsdscan-straighten-symbolic",
-                    "rotate": "wsdscan-upright-symbolic"}
+                    "rotate": "wsdscan-upright-symbolic", "manual": "wsdscan-adjust-symbolic"}
 TURN_ICONS = {-90: "wsdscan-turn-left-symbolic", 90: "wsdscan-turn-right-symbolic"}
 
 
@@ -344,6 +394,11 @@ def correction_tooltip(name, info, dpi, applied):
         width, height = wsdscan.crop_size(info)
         text = _("Cut to the sheet: {w} × {h} mm").format(
             w=round(width / dpi * 25.4), h=round(height / dpi * 25.4))
+    elif name == "manual":
+        width, height = wsdscan.crop_size(info)
+        text = _("Adjusted by hand: {w} × {h} mm, straightened by {angle}°").format(
+            w=round(width / dpi * 25.4), h=round(height / dpi * 25.4),
+            angle=f"{info['manual'][4]:.1f}")
     elif name == "skew":
         text = _("Straightened by {angle}°").format(angle=f"{abs(info['skew']):.1f}")
     else:
@@ -488,12 +543,13 @@ def device_name(device):
 
 
 def device_label(device):
-    """'EPSON ES-580W · 192.168.2.13'."""
-    return f"{device_name(device)} · {wsdscan.urlsplit(device['device_url']).hostname}"
+    """'EPSON ES-580W · 192.168.2.13' (or the SANE device name)."""
+    return f"{device_name(device)} · {wsdscan.device_address(device)}"
 
 
 def scanner_configured(config):
-    return bool(config.get("scanner") or config.get("host"))
+    return bool(config.get("scanner") or config.get("host")
+                or (config.get("backend") == "sane" and config.get("device")))
 
 
 def scanner_problem(error, config):
@@ -504,7 +560,8 @@ def scanner_problem(error, config):
     status (window subtitle), title and detail (scanner row), banner,
     button and action (banner button), can_scan, retry (look again later).
     """
-    name = config.get("scanner") or config.get("host") or ""
+    sane = config.get("backend") == "sane"
+    name = config.get("scanner") or config.get("device" if sane else "host") or ""
     host = config.get("host") or ""
     preferences = "app.preferences"
     if not scanner_configured(config):
@@ -517,13 +574,18 @@ def scanner_problem(error, config):
         if isinstance(error, wsdscan.ScannerNotFound):
             return SimpleNamespace(
                 status=_("No scanner set up"), title=_("No scanner set up"),
-                detail=_("None found automatically on the network"),
+                detail=_("SANE finds no scanner") if sane
+                else _("None found automatically on the network"),
                 banner=_("No scanner is set up, and none was found on the network. "
                          "Add your scanner in the preferences."),
                 button=_("Add Scanner"), action=preferences, can_scan=True, retry=True)
     elif isinstance(error, wsdscan.ScannerNotFound):
-        where = (_("Not reachable at {host}").format(host=host) if host
-                 else _("Not found on the network"))
+        if sane:
+            where = (_("Not available through SANE as {device}").format(device=config["device"])
+                     if config.get("device") else _("SANE finds no scanner"))
+        else:
+            where = (_("Not reachable at {host}").format(host=host) if host
+                     else _("Not found on the network"))
         return SimpleNamespace(
             status=_("Scanner not reachable"), title=name,
             detail=_("{where} · trying again").format(where=where),
@@ -557,7 +619,7 @@ def describe_scanner(device, caps, name=""):
     """
     title = name or device_name(device)
     parts = [device_name(device)] if name and name != device_name(device) else []
-    parts.append(wsdscan.urlsplit(device["device_url"]).hostname)
+    parts.append(wsdscan.device_address(device))
     state = caps.get("state") or "?"
     parts.append(SCANNER_STATES.get(state, state))
     parts += caps.get("conditions") or []

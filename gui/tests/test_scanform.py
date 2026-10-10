@@ -158,6 +158,11 @@ class PageCorrectionTextTest(unittest.TestCase):
         self.assertRegex(scanform.correction_tooltip("crop", info, 300, True),
                          r"^Cut to the sheet: \d+ × 152 mm$")
 
+    def test_manual_tooltip(self):
+        info = dict(self.INFO, manual=(600, 800, 1181, 1772, -2.25))
+        self.assertEqual(scanform.correction_tooltip("manual", info, 300, True),
+                         "Adjusted by hand: 100 × 150 mm, straightened by -2.2°")
+
     def test_tooltips(self):
         self.assertEqual(scanform.correction_tooltip("crop", self.INFO, 300, True),
                          "Cut to the sheet: 105 × 148 mm")
@@ -179,7 +184,7 @@ class PageCorrectionTextTest(unittest.TestCase):
                          ["A4", "straighten"], "only with the automatic paper size")
         self.assertEqual([v for v, _label in scanform.CROPS], list(wsdscan.CROP_CHOICES))
         self.assertEqual(scanform.PAPERS[0], ("auto", "Automatic"))
-        self.assertEqual(set(scanform.CORRECTION_ICONS), set(wsdscan.CORRECTIONS))
+        self.assertEqual(set(scanform.CORRECTION_ICONS), set(wsdscan.CORRECTIONS) | {"manual"})
 
 
 class OcrStatusTest(unittest.TestCase):
@@ -378,6 +383,65 @@ class ScannerProfilesTest(unittest.TestCase):
         self.assertEqual(scanform.migrate_scanners(dict(wsdscan.CONFIG_DEFAULTS), profiles)[1], "A")
 
 
+class SaneProfileTest(unittest.TestCase):
+    DEVICE = wsdscan.sane_device("epsonds:net:192.168.2.13", "Epson", "ES-580W", "ESC/I-2")
+
+    def test_profile_from_found_device(self):
+        shared = dict(wsdscan.CONFIG_DEFAULTS, backend="sane", device="other:0", mode="gray")
+        name, values = scanform.scanner_from_device(self.DEVICE, {}, shared)
+        self.assertEqual(name, "Epson ES-580W")
+        self.assertEqual((values["backend"], values["device"], values["host"]),
+                         ("sane", "epsonds:net:192.168.2.13", ""))
+        self.assertEqual(values["mode"], "gray", "settings come from [scan]")
+        wsd = scanform.full_profile(shared, {"host": "192.168.2.13"})
+        self.assertEqual((wsd["backend"], wsd["device"]), ("wsd", ""), "not inherited")
+        self.assertEqual(scanform.scanner_key(values), ("sane", "epsonds:net:192.168.2.13"))
+        self.assertEqual(scanform.scanner_key(wsd), ("wsd", "192.168.2.13"))
+
+    def test_texts(self):
+        self.assertEqual(scanform.scanner_subtitle({"backend": "sane", "device": "test:0"}),
+                         "SANE · test:0")
+        self.assertEqual(scanform.scanner_subtitle({"backend": "sane"}),
+                         "SANE · Found automatically")
+        self.assertEqual(scanform.device_label(self.DEVICE),
+                         "Epson ES-580W · epsonds:net:192.168.2.13")
+        self.assertEqual(scanform.describe_scanner(self.DEVICE, {"state": "Idle"}, "Office"),
+                         ("Office", "Epson ES-580W · epsonds:net:192.168.2.13 · Idle"))
+        config = {"scanner": "Office", "backend": "sane", "device": "epsonds:net:1.2.3.4"}
+        problem = scanform.scanner_problem(wsdscan.ScannerNotFound("x"), config)
+        self.assertEqual(problem.detail,
+                         "Not available through SANE as epsonds:net:1.2.3.4 · trying again")
+        self.assertTrue(scanform.scanner_configured({"backend": "sane", "device": "test:0"}))
+        self.assertFalse(scanform.scanner_configured({"backend": "sane", "device": ""}))
+
+    def test_reconnect_and_scan_args(self):
+        old = {"backend": "sane", "device": "a:0", "host": "", "model": ""}
+        self.assertTrue(scanform.needs_reconnect(old, dict(old, device="b:0"), True))
+        self.assertTrue(scanform.needs_reconnect(old, dict(old, backend="wsd"), True))
+        self.assertFalse(scanform.needs_reconnect(old, dict(old), True))
+        values = dict(wsdscan.CONFIG_DEFAULTS, backend="sane", device="a:0",
+                      hardware_corrections=False, sane_options="--eject")
+        a = scanform.scan_args(values)
+        self.assertEqual((a.backend, a.device, a.hardware_corrections, a.sane_options),
+                         ("sane", "a:0", False, "--eject"))
+
+    def test_scanner_corrections_offered(self):
+        caps = {"colors": [], "formats": [], "sane": {"crop": "adf-crp", "skew": None}}
+        self.assertEqual(scanform.Choices.from_capabilities(caps).hardware, ("crop",))
+        self.assertEqual(scanform.Choices.from_capabilities({}).hardware, ())
+
+    def test_find_all(self):
+        sane = [self.DEVICE]
+        with mock.patch.object(wsdscan, "discover", side_effect=wsdscan.ScannerNotFound("none")), \
+                mock.patch.object(wsdscan, "sane_devices", return_value=sane), \
+                mock.patch.object(wsdscan.shutil, "which", return_value="/usr/bin/scanimage"):
+            self.assertEqual(scanform.find_all_scanners(), sane)
+        with mock.patch.object(wsdscan, "discover", side_effect=wsdscan.ScannerNotFound("none")), \
+                mock.patch.object(wsdscan.shutil, "which", return_value=None), \
+                self.assertRaisesRegex(wsdscan.ScannerNotFound, "none"):
+            scanform.find_all_scanners()
+
+
 class PreviewTextTest(unittest.TestCase):
     def test_pages_summary(self):
         self.assertEqual(scanform.pages_summary(1), "1 page")
@@ -485,7 +549,7 @@ class DesktopFilesTest(unittest.TestCase):
     def test_metainfo_screenshots_exist(self):
         root = ET.parse(os.path.join(self.DATA, f"{scanform.APP_ID}.metainfo.xml")).getroot()
         images = [img.text for img in root.iter("image")]
-        self.assertEqual(len(images), 3)
+        self.assertEqual(len(images), 4)
         for url in images:
             name = url.rsplit("/", 1)[1]
             path = os.path.join(ROOT, "docs", "screenshots", name)

@@ -4,9 +4,9 @@ A desktop app for GNOME, KDE Plasma and Ubuntu that scans every sheet in your ne
 
 It uses GTK 4 and libadwaita, so it looks native on GNOME and Ubuntu Desktop. On KDE Plasma it uses KDE's own file dialogs (through desktop portals) and follows the light/dark setting.
 
-| After a scan, with text recognition | Reviewing pages before saving | A scanner's settings |
-|---|---|---|
-| ![Main window after a scan](../docs/screenshots/main-window.png) | ![Review step: pages cut, straightened and turned upright; a blank page unticked](../docs/screenshots/review-pages.png) | ![Scanner page in the preferences](../docs/screenshots/scanner-settings.png) |
+| After a scan, with text recognition | Reviewing pages before saving | Adjusting a page | A scanner's settings |
+|---|---|---|---|
+| ![Main window after a scan](../docs/screenshots/main-window.png) | ![Review step: pages cut, straightened and turned upright; a blank page unticked](../docs/screenshots/review-pages.png) | ![Page editor: the whole scan, turned and straightened, with the page as a red frame](../docs/screenshots/page-editor.png) | ![Scanner page in the preferences](../docs/screenshots/scanner-settings.png) |
 
 ## Install
 
@@ -49,7 +49,7 @@ tar -xzf scan-to-pdf-<version>.tar.gz && cd scan-to-pdf-<version> && ./install.s
 1. Put the pages in the scanner's document feeder.
 2. Open **Scan to PDF**. It connects to your scanner and shows it at the top. With several scanners configured, choose one in the **Scanner** selector; the app starts with the one used last. Without any configured, it uses the one it finds on the network.
 3. Check the file name and folder. The **Scan settings** row shows the current settings, e.g. "Both sides · Color · 300 dpi · A4". Click it (or press Ctrl+E) to change them in a separate dialog:
-   - The dialog has sides, color, resolution, paper size (including **Automatic**, with **Cut to the sheet**: **Left and right** by default, or **All sides**), lossless, brightness/contrast, **Recognize text (OCR)**, **Remove blank pages**, **Straighten pages**, **Turn pages upright** and **Review pages before saving**. It only offers what your scanner supports.
+   - The dialog has sides, color, resolution, paper size (including **Automatic**, with **Cut to the sheet**: **Left and right** by default, or **All sides**), lossless, brightness/contrast, **Recognize text (OCR)**, **Remove blank pages**, **Straighten pages**, **Scanner's own corrections** (only for a SANE scanner whose backend can cut or straighten pages itself; on by default), **Turn pages upright** and **Review pages before saving**. It only offers what your scanner supports.
    - Changes apply to the next scans.
    - **Save for This Scanner** keeps them as the scanner's settings, also for `wsdscan --scanner NAME`. Without a configured scanner the button is **Save as Defaults**.
    - **Reset to Defaults** goes back to the saved settings.
@@ -60,6 +60,12 @@ tar -xzf scan-to-pdf-<version>.tar.gz && cd scan-to-pdf-<version> && ./install.s
    - Untick the pages you don't want, then click **Save** (or press Enter in the file name). You can still change the file name and folder now.
    - With **Remove blank pages** on, blank pages already start unticked; tick one to keep it after all.
    - Each correction made to a page shows as an icon on its thumbnail: cut to the sheet (paper size **Automatic**), straightened, turned upright. Click an icon to switch that correction off for this page (the thumbnail shows the result), and again to switch it back on. The tooltip says what was done, e.g. "Straightened by 3.4°". This works until you click **Save**; also while the pages are still being scanned.
+   - **Double-click a page** to adjust it in detail. The editor shows the whole scan, already straightened and turned as the page will be, with the page as a red frame:
+     - Drag an edge (or a corner) of the frame to move it; drag inside the frame to move the whole frame. It stays within the scan, at least 1 cm in size.
+     - **Angle** straightens by any angle (−180° to 180°), prefilled with the angle found; the frame keeps its size and middle. The two arrow buttons turn by 90°.
+     - **Automatic** goes back to the values found; **Apply** takes the settings, **Cancel** drops them.
+     
+     After **Apply**, the thumbnail shows the adjusted page and one icon, "adjusted by hand", stands for it in place of the cut and straighten icons; click it to switch back to the automatic corrections. The PDF is saved like that, and text recognition follows it. Like the icons, this works until you click **Save**.
    - To turn a page by hand, use the two buttons at the top left of its thumbnail: **Turn left** and **Turn right** (90° each). This comes on top of the corrections, e.g. for a page that **Turn pages upright** couldn't judge, and also works without that switch.
    - Only the kept pages are saved and passed to text recognition.
    - **Discard Scan** saves nothing.
@@ -122,18 +128,19 @@ Every scanner has **its own settings**. Different scanners can be set up differe
 **Preferences** (Ctrl+,) has these sections:
 - **Scanners:** the list of your scanners; the radio button marks the default. Click a scanner to open its page, or click the bin to remove it.
   - **Add Scanner by Address…** (the last row of the list) adds a scanner by its IP address or host name, e.g. if it isn't found on the network. Enter the address; the name ("EPSON ES-580W") is proposed as soon as the scanner answers.
-  - **Find Scanners** lists the WSD scanners on the network; **Add** takes one over (**Add Again** for a second configuration of the same device).
+  - **Find Scanners** lists the WSD scanners on the network and, if SANE is installed (`sane-utils`), the scanners SANE finds; **Add** takes one over (**Add Again** for a second configuration of the same device).
   - A scanner set up in an older version becomes the first entry automatically, named after the device, e.g. "EPSON ES-580W".
 - **After scanning:** open the PDF, notify when done.
 - **Status bar:** see above.
 
 **A scanner's page** has:
 - **Scanner:**
-  - **IP address or host name** (first): empty = find it automatically on the network. If the scanner's IP address changes (assigned automatically by the router), use its network name instead, e.g. `EPSON1234AB.local`.
+  - **Connection** (first): **Network (WSD)**, built in, or **SANE**, through `scanimage` (see [SANE](../README.md#sane)). With SANE, **SANE device** takes the device name, e.g. `epsonds:net:192.168.2.13` (empty = the only one SANE finds), and **Extra SANE options** further options for its backend, e.g. `--adf-justification-x=center` (marked red and not saved if `scanimage` wouldn't take them).
+  - **IP address or host name** (WSD): empty = find it automatically on the network. If the scanner's IP address changes (assigned automatically by the router), use its network name instead, e.g. `EPSON1234AB.local`.
   - **Name:** editable. While you haven't typed one, the name of the scanner found at the address ("EPSON ES-580W") is proposed.
   - **Device:** what was found at that address.
   - **Use by default.**
-- **Scan settings:** sides, color, resolution, paper size, lossless, brightness/contrast, text recognition on/off, remove blank pages, straighten pages, turn pages upright, review pages. Once the device has answered, only what it supports is offered.
+- **Scan settings:** sides, color, resolution, paper size, lossless, brightness/contrast, text recognition on/off, remove blank pages, straighten pages, the scanner's own corrections (SANE), turn pages upright, review pages. Once the device has answered, only what it supports is offered.
 - **Text recognition (OCR):** engine (Automatic, OCRmyPDF, Tesseract) and languages. **Choose languages automatically** is on by default and shows its current result. Turn it off to pick languages from the installed ones.
 - **Saving:** folder, file-name template (`{date}`, `{time}`).
 - **Duplicate** (a copy to configure differently) and **Remove Scanner**.
@@ -189,6 +196,10 @@ last_scanner = Office color
 | `ocr_lang` | e.g. `deu+eng`, or empty | empty = automatic: all installed languages (system language and English first); only those two if more than 4 are installed |
 | `skip_blank` | `true`, `false` | remove blank pages (`--skip-blank`); in the app's review step they start unticked |
 | `crop` | `sides`, `all` | paper `auto`: cut only the sheet's left and right edges (the scanner finds start and end), or all four (`--crop`) |
+| `backend` | `wsd`, `sane` | how to reach the scanner: built-in WSD, or SANE's `scanimage` (`--backend`) |
+| `device` | a SANE device name, or empty | with `sane`: e.g. `epsonds:net:192.168.2.13`; empty = the only one SANE finds |
+| `hardware_corrections` | `true`, `false` | with `sane`: the scanner cuts and straightens pages itself where its backend offers it |
+| `sane_options` | scanimage options | with `sane`: further options for the backend, e.g. `--adf-justification-x=center` |
 | `deskew` | `true`, `false` | straighten pages fed in crooked (`--deskew`) |
 | `auto_rotate` | `true`, `false` | turn pages upright (`--auto-rotate`); needs Tesseract with orientation data |
 | `review_pages` | `true`, `false` | app only: review the pages before saving and OCR; the command ignores it |

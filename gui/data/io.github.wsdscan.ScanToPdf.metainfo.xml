@@ -21,8 +21,10 @@
       <li>Page preview; remove single pages before saving</li>
       <li>Optionally removes blank pages, e.g. empty backs</li>
       <li>Finds the paper size, straightens crooked pages and turns them upright</li>
+      <li>Adjust a page's edges and angle by hand before saving</li>
       <li>Status bar icon and start at login</li>
       <li>In English and German</li>
+      <li>Network scanners over WSD, other scanners through SANE</li>
       <li>Shares its settings with the wsdscan command-line tool</li>
     </ul>
   </description>
@@ -34,6 +36,10 @@
     <screenshot>
       <caption>Reviewing pages before saving</caption>
       <image>https://raw.githubusercontent.com/linuxrrze/wsdscan/main/docs/screenshots/review-pages.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Adjusting a page</caption>
+      <image>https://raw.githubusercontent.com/linuxrrze/wsdscan/main/docs/screenshots/page-editor.png</image>
     </screenshot>
     <screenshot>
       <caption>A scanner's settings</caption>

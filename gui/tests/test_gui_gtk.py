@@ -150,6 +150,70 @@ class GtkTest(unittest.TestCase):
         finally:
             os.environ["PATH"] = old_path
 
+    def test_sane_scanner(self):
+        from fake_sane import EPSONDS_OPTIONS, make_scanimage_bin, read_log
+        from fake_wsd import JPEG_RGB
+        work = tempfile.mkdtemp(prefix="wsdscan-gtk-sane-")
+        page = os.path.join(work, "page.jpg")
+        with open(page, "wb") as f:
+            f.write(JPEG_RGB)
+        device = "epsonds:net:192.168.2.13"
+        bin_dir = make_scanimage_bin(os.path.join(work, "bin"), pages=[page] * 2,
+                                     devices=[[device, "Epson", "ES-580W", "ESC/I-2"]],
+                                     options={device: EPSONDS_OPTIONS})
+        old_path = os.environ["PATH"]
+        os.environ["PATH"] = bin_dir
+        try:
+            out_dir = tempfile.mkdtemp(prefix="wsdscan-gtk-out-")
+            wsdscan.save_config({"scanner": "Office", "outdir": out_dir}, scanners={
+                "Office": {"backend": "sane", "device": device, "paper": "auto",
+                           "deskew": True}})
+            app = wsdscan_gui.ScanApp()
+            app.register(None)
+            app.activate()
+            window = app.window
+            wait_for(lambda: window.device is not None)
+            self.assertEqual(window.scanner_row.get_subtitle(),
+                             f"Epson ES-580W · {device} · Idle")
+            hardware = window.settings.hardware
+            self.assertTrue(hardware.get_visible() and hardware.get_active())
+            self.assertEqual(hardware.get_subtitle(),
+                             "The scanner cuts and straightens pages itself")
+            window.on_scan()
+            wait_for(lambda: window.cancel_event is None)
+            self.assertEqual(len(window.tiles), 2)
+            scan = [c for c in read_log(bin_dir) if "--batch-print" in c][-1]
+            self.assertIn("--adf-crp=yes", scan)
+            self.assertIn("--adf-skew=yes", scan)
+            self.assertEqual(len(os.listdir(out_dir)), 1)
+
+            prefs = wsdscan_gui.PreferencesDialog(window)
+            prefs.present(window)
+            page_ = wsdscan_gui.ScannerPage(prefs, "Office")
+            self.assertEqual(page_.backend_row.get_value(), "sane")
+            self.assertTrue(page_.sane_row.get_visible())
+            self.assertFalse(page_.host_row.get_visible())
+            page_.sane_options.set_text("--batch=/tmp/x")
+            self.assertIn("error", page_.sane_options.get_css_classes())
+            self.assertEqual(page_.values()["sane_options"], "", "not saved")
+            page_.sane_options.set_text("--adf-justification-x=center")
+            self.assertEqual(page_.values()["sane_options"], "--adf-justification-x=center")
+            page_.backend_row.set_value("wsd")
+            self.assertTrue(page_.host_row.get_visible())
+            self.assertFalse(page_.sane_options.get_visible())
+            page_.backend_row.set_value("sane")
+            wait_for(lambda: page_.device_row.get_subtitle() == f"Epson ES-580W · {device}")
+            # Find Scanners lists what SANE finds.
+            button = Gtk.Button()
+            prefs._find_scanners(button)
+            wait_for(lambda: button.get_sensitive(), timeout=30)
+            titles = [(row.get_title(), row.get_subtitle()) for row in prefs.found_rows]
+            self.assertIn(("Epson ES-580W", f"SANE · {device}"), titles)
+            prefs.close()
+            window.close()
+        finally:
+            os.environ["PATH"] = old_path
+
     def test_scanner_page_settings_and_name(self):
         with FakeScanner(model="ES-580W", formats=["exif", "tiff-single-uncompressed"],
                          resolutions=[100, 300]) as fake:
@@ -219,8 +283,11 @@ class GtkTest(unittest.TestCase):
         page = wsdscan_gui.ScannerPage(prefs, "A")
         group = page.host_row.get_parent()
         assert group is not None
-        self.assertIs(group.get_first_child(), page.host_row, "address is the first row")
-        self.assertIs(page.host_row.get_next_sibling(), page.name_row, "then the name")
+        self.assertIs(group.get_first_child(), page.backend_row, "the connection first")
+        self.assertIs(page.backend_row.get_next_sibling(), page.host_row, "then the address")
+        self.assertIs(page.host_row.get_next_sibling(), page.sane_row, "(or the SANE device)")
+        self.assertFalse(page.sane_row.get_visible())
+        self.assertIs(page.sane_row.get_next_sibling(), page.name_row, "then the name")
         self.assertFalse(hasattr(page, "model_row"), "no model filter in the app")
         self.assertEqual(page.values()["model"], "")
         # A model filter set in the config file (for the CLI) is kept unchanged.
@@ -443,6 +510,69 @@ class GtkTest(unittest.TestCase):
                      re.findall(rb"/MediaBox \[0 0 ([\d. ]+)\]", f.read())]
         self.assertAlmostEqual(boxes[0][0], 438 * 72 / 300, delta=3)
         self.assertEqual(boxes[1], (638 * 72 / 300, 1163 * 72 / 300))
+
+    def test_page_adjusted_in_editor(self):
+        with FakeScanner(model="ES-580W", sheets=1, images=[self.sheet_jpeg()]) as fake:
+            _app, window, out_dir = self.start_app(fake, paper="auto", deskew=True,
+                                                   review_pages=True, source="adf")
+            window.on_scan()
+            wait_for(lambda: window.review is not None)
+            tile = window.tiles[0]
+            self.assertIn("Double-click", tile.picture.get_tooltip_text())
+            editor = tile.open_editor()
+            view = editor.view
+            wait_for(lambda: view.get_width() > 0)
+            self.assertAlmostEqual(editor.angle.get_value(), 3.5, delta=0.05, msg="prefilled")
+            self.assertEqual(editor.state, wsdscan.manual_geometry(tile.info))
+            # The red frame's right edge is where the page ends, and can be grabbed.
+            x0, y0, x1, y1 = view.view_box()
+            self.assertEqual(view.hit(x1, (y0 + y1) / 2), "r")
+            self.assertEqual(view.hit(x0 + 1, y0), "lt")
+            self.assertEqual(view.hit((x0 + x1) / 2, (y0 + y1) / 2), "move")
+            self.assertIsNone(view.hit(1, 1))
+            u0, v0, u1, v1 = view.box()
+            view.start_box = view.box()
+            view.drag("r", -100, 0)  # frame pixels = scan pixels
+            view.start_box = view.box()
+            view.drag("b", 0, -50)
+            self.assertAlmostEqual(view.box()[2], u1 - 100)
+            self.assertAlmostEqual(view.box()[3], v1 - 50)
+            view.start_box = view.box()
+            view.drag("l", -10000, 0)
+            self.assertAlmostEqual(view.box()[0], view.bounds()[0], msg="not beyond the scan")
+            editor.angle.set_value(1.0)
+            self.assertEqual(editor.state[4], 1.0)
+            _cx, _cy, w, h, _angle = editor.state
+            editor.apply()
+            self.assertEqual(tile.info["manual"], editor.state)
+            self.assertEqual(list(tile.correction_buttons), ["manual"])
+            self.assertIn("straightened by 1.0°",
+                          tile.correction_buttons["manual"].get_tooltip_text())
+            self.assertAlmostEqual(tile.paintable.do_get_intrinsic_aspect_ratio(), w / h)
+            # Reset in a second visit: back to the automatic corrections.
+            again = tile.open_editor()
+            again.reset()
+            self.assertAlmostEqual(again.angle.get_value(), 3.5, delta=0.05)
+            again.turn_by(90)
+            again.apply()
+            self.assertNotIn("manual", tile.info)
+            self.assertEqual(tile.info["turn"], 90)
+            self.assertEqual(list(tile.correction_buttons), ["crop", "skew"])
+            # Adjusted once more, and saved like that.
+            last = tile.open_editor()
+            last.angle.set_value(-2.0)
+            last.apply()
+            page_w, page_h = wsdscan.page_layout(tile.info)[:2]
+            window.finish_review(True)
+            wait_for(lambda: window.cancel_event is None)
+            self.assertIsNone(tile.open_editor(), "saved: no longer editable")
+            window.close()
+        with open(os.path.join(out_dir, os.listdir(out_dir)[0]), "rb") as f:
+            boxes = [tuple(float(v) for v in m.split()) for m in
+                     re.findall(rb"/MediaBox \[0 0 ([\d. ]+)\]", f.read())]
+        self.assertAlmostEqual(boxes[0][0], page_w * 72 / 300, delta=0.01)
+        self.assertAlmostEqual(boxes[0][1], page_h * 72 / 300, delta=0.01)
+        self.assertGreater(boxes[0][0], boxes[0][1], "turned right")
 
     def test_pages_turned_by_hand_in_review(self):
         with FakeScanner(model="ES-580W", sheets=1) as fake:
